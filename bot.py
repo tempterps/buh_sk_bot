@@ -1,7 +1,24 @@
 import os
-
-from dotenv import load_dotenv
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from telebot import TeleBot, types
+from dotenv import load_dotenv
+
+
+
+
+
+# Принудительный вывод логов
+sys.stdout.flush()
+
+load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+bot = TeleBot(BOT_TOKEN)
+
+
+
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -665,6 +682,35 @@ def fallback_handler(message):
     )
 
 
-if __name__ == "__main__":
-    print("Бот успішно запущений і працює...")
+
+# --- 2. ВЕБ-СЕРВЕР ДЛЯ ХОСТИНГА (ПОРТ 3000) ---
+class WebhookServer(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Bot is running alive!")
+
+def run_web_server():
+    server_address = ('0.0.0.0', 3000) # Тот самый порт 3000 из панели
+    httpd = HTTPServer(server_address, WebhookServer)
+    print("Веб-сервер заглушки запущен на порту 3000...")
+    httpd.serve_forever()
+
+
+
+
+def run_bot():
+    print("Запуск Telegram бота...")
     bot.infinity_polling()
+
+# --- 3. ЗАПУСК ОБОИХПРОЦЕССОВ ОДНОВРЕМЕННО ---
+if __name__ == "__main__":
+    # Запускаем Телеграм-бота в отдельном фоновом потоке
+    bot_thread = threading.Thread(target=run_bot)
+    bot_thread.daemon = True
+    bot_thread.start()
+    
+    # Главный поток отдаем веб-серверу, чтобы контейнер не закрывался
+    run_web_server()
+
