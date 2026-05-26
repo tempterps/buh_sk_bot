@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 
 load_dotenv()
-BOT_TOKEN="8651354073:AAESN9jFhWIkNQZ6B6XowYt7WNKPXY4r61Y"
+BOT_TOKEN="..............."
 CONTACT_URL = "https://t.me/buh_sk"
 
 if not BOT_TOKEN:
