@@ -3,6 +3,8 @@ import sys
 import threading
 import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import psycopg2
+from psycopg2.extras import Json
 from telebot import TeleBot, types
 from dotenv import load_dotenv
 
@@ -11,13 +13,114 @@ from dotenv import load_dotenv
 
 
 load_dotenv()
-BOT_TOKEN="..............."
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 CONTACT_URL = "https://t.me/buh_sk"
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не знайдено у .env")
 
 bot = TeleBot(BOT_TOKEN)
+
+
+def get_db_connection():
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL не найден в переменных окружения")
+    return psycopg2.connect(DATABASE_URL)
+
+
+def init_db():
+    if not DATABASE_URL:
+        print("DATABASE_URL не задан, логирование в БД отключено", flush=True)
+        return
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bot_events (
+            id BIGSERIAL PRIMARY KEY,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+
+            user_id BIGINT,
+            username TEXT,
+            first_name TEXT,
+            language_code TEXT,
+
+            chat_id BIGINT,
+
+            event_type TEXT NOT NULL,
+            message_text TEXT,
+            callback_data TEXT,
+
+            group_id TEXT,
+            service_id TEXT,
+
+            source TEXT,
+            payload JSONB
+        );
+        """
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def log_event(
+    user=None,
+    chat_id=None,
+    event_type="unknown",
+    message_text=None,
+    callback_data=None,
+    group_id=None,
+    service_id=None,
+    source="telegram_bot",
+    payload=None,
+):
+    if not DATABASE_URL:
+        return
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO bot_events (
+                user_id,
+                username,
+                first_name,
+                language_code,
+                chat_id,
+                event_type,
+                message_text,
+                callback_data,
+                group_id,
+                service_id,
+                source,
+                payload
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                getattr(user, "id", None),
+                getattr(user, "username", None),
+                getattr(user, "first_name", None),
+                getattr(user, "language_code", None),
+                chat_id,
+                event_type,
+                message_text,
+                callback_data,
+                group_id,
+                service_id,
+                source,
+                Json(payload or {}),
+            ),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as error:
+        print(f"DB logging error: {error}", flush=True)
 
 MAIN_MENU_TEXT = "📋 Дізнатись про послуги"
 CONTACT_TEXT = "💬 Написати в Telegram"
@@ -511,7 +614,7 @@ def build_groups_keyboard():
     markup = types.InlineKeyboardMarkup(row_width=1)
     for group_id, group in SERVICE_GROUPS.items():
         markup.add(types.InlineKeyboardButton(group["title"], callback_data=f"group:{group_id}"))
-    markup.add(types.InlineKeyboardButton("💬 Написати нам", url=CONTACT_URL))
+    markup.add(types.InlineKeyboardButton("💬 Написати нам", callback_data="contact:telegram"))
     return markup
 
 
@@ -522,7 +625,7 @@ def build_group_keyboard(group_id):
         markup.add(types.InlineKeyboardButton(SERVICES[service_id]["menu_title"], callback_data=f"service:{service_id}"))
     markup.row(
         types.InlineKeyboardButton("⬅️ До розділів", callback_data="menu:services"),
-        types.InlineKeyboardButton("💬 Написати нам", url=CONTACT_URL),
+        types.InlineKeyboardButton("💬 Написати нам", callback_data="contact:telegram"),
     )
     return markup
 
@@ -531,7 +634,7 @@ def build_service_keyboard(service_id):
     group_id = SERVICES[service_id]["group"]
     markup = types.InlineKeyboardMarkup(row_width=1)
     source_url = SERVICES[service_id].get("source_url")
-    markup.add(types.InlineKeyboardButton("💬 Замовити цю послугу", url=CONTACT_URL))
+    markup.add(types.InlineKeyboardButton("💬 Замовити цю послугу", callback_data="contact:telegram"))
     if source_url:
         markup.add(types.InlineKeyboardButton("🌐 Детальніше на сайті", url=source_url))
     markup.row(
@@ -599,13 +702,37 @@ def send_start(chat_id):
     bot.send_message(chat_id, welcome_text, reply_markup=markup, disable_web_page_preview=True)
 
 
+def send_contact_url(chat_id):
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("💬 Відкрити Telegram", url=CONTACT_URL))
+    bot.send_message(
+        chat_id,
+        "Натисніть кнопку нижче, щоб написати нам напряму.",
+        reply_markup=markup,
+        disable_web_page_preview=True,
+    )
+
+
 @bot.message_handler(commands=["start", "services"])
 def start_command(message):
+    log_event(
+        user=message.from_user,
+        chat_id=message.chat.id,
+        event_type="start_command",
+        message_text=message.text,
+        payload={"command": message.text},
+    )
     send_start(message.chat.id)
 
 
 @bot.message_handler(func=lambda message: message.text == MAIN_MENU_TEXT)
 def handle_main_menu(message):
+    log_event(
+        user=message.from_user,
+        chat_id=message.chat.id,
+        event_type="main_menu_clicked",
+        message_text=message.text,
+    )
     bot.send_message(
         message.chat.id,
         services_overview_text(),
@@ -616,20 +743,25 @@ def handle_main_menu(message):
 
 @bot.message_handler(func=lambda message: message.text == CONTACT_TEXT)
 def handle_contact(message):
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("💬 Перейти в Telegram", url=CONTACT_URL))
-    bot.send_message(
-        message.chat.id,
-        "Напишіть нам напряму, і ми підкажемо, яка послуга вам потрібна та що робити далі.",
-        reply_markup=markup,
-        disable_web_page_preview=True,
+    log_event(
+        user=message.from_user,
+        chat_id=message.chat.id,
+        event_type="contact_clicked",
+        message_text=message.text,
     )
+    send_contact_url(message.chat.id)
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("menu:"))
 def menu_callback(call):
     bot.answer_callback_query(call.id)
     if call.data == "menu:services":
+        log_event(
+            user=call.from_user,
+            chat_id=call.message.chat.id,
+            event_type="services_menu_opened",
+            callback_data=call.data,
+        )
         send_or_edit(
             call.message.chat.id,
             services_overview_text(),
@@ -642,6 +774,13 @@ def menu_callback(call):
 def group_callback(call):
     bot.answer_callback_query(call.id)
     group_id = call.data.split(":", 1)[1]
+    log_event(
+        user=call.from_user,
+        chat_id=call.message.chat.id,
+        event_type="group_opened",
+        callback_data=call.data,
+        group_id=group_id,
+    )
     send_or_edit(
         call.message.chat.id,
         group_text(group_id),
@@ -654,6 +793,13 @@ def group_callback(call):
 def service_callback(call):
     bot.answer_callback_query(call.id)
     service_id = call.data.split(":", 1)[1]
+    log_event(
+        user=call.from_user,
+        chat_id=call.message.chat.id,
+        event_type="service_opened",
+        callback_data=call.data,
+        service_id=service_id,
+    )
     send_or_edit(
         call.message.chat.id,
         service_text(service_id),
@@ -662,8 +808,26 @@ def service_callback(call):
     )
 
 
+@bot.callback_query_handler(func=lambda call: call.data == "contact:telegram")
+def contact_callback(call):
+    bot.answer_callback_query(call.id)
+    log_event(
+        user=call.from_user,
+        chat_id=call.message.chat.id,
+        event_type="contact_intent",
+        callback_data=call.data,
+    )
+    send_contact_url(call.message.chat.id)
+
+
 @bot.message_handler(func=lambda message: True)
 def fallback_handler(message):
+    log_event(
+        user=message.from_user,
+        chat_id=message.chat.id,
+        event_type="free_text_message",
+        message_text=message.text,
+    )
     bot.send_message(
         message.chat.id,
         "Щоб швидко знайти потрібну послугу, натисніть кнопку '📋 Дізнатись про послуги' або напишіть нам напряму.",
@@ -683,7 +847,7 @@ def run_bot():
 
 # --- 3. ЗАПУСК ОБОИХПРОЦЕССОВ ОДНОВРЕМЕННО ---
 if __name__ == "__main__":
-    # Запускаем Телеграм-бота в отдельном фоновом потоке
-   run_bot()
+    init_db()
+    run_bot()
     
 

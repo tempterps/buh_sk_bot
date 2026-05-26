@@ -1,0 +1,22 @@
+services:
+  bot:
+    build: .
+    depends_on:
+      - db
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - DATABASE_URL=postgresql://buhbot_user:buhbot_password@db:5432/buhbot
+    restart: unless-stopped
+
+  db:
+    image: postgres:16
+    environment:
+      - POSTGRES_DB=buhbot
+      - POSTGRES_USER=buhbot_user
+      - POSTGRES_PASSWORD=buhbot_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
