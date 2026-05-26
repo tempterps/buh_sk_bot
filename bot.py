@@ -1,6 +1,7 @@
 import os
 import sys
 import threading
+import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telebot import TeleBot, types
 from dotenv import load_dotenv
@@ -9,19 +10,8 @@ from dotenv import load_dotenv
 
 
 
-# Принудительный вывод логов
-sys.stdout.flush()
-
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-bot = TeleBot(BOT_TOKEN)
-
-
-
-
-load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN="8651354073:AAESN9jFhWIkNQZ6B6XowYt7WNKPXY4r61Y"
 CONTACT_URL = "https://t.me/buh_sk"
 
 if not BOT_TOKEN:
@@ -45,7 +35,7 @@ SERVICE_GROUPS = {
     },
     "vat": {
         "title": "🧾 ПДВ",
-        "description": "Допомога з реєстрацією DPH під ваш формат роботи та тип операцій.",
+        "description": "Допомога з реєстрацією ПДВ (DPH) під ваш формат роботи та тип операцій.",
         "items": ["vat_7a", "vat_full"],
     },
     "declarations": {
@@ -54,7 +44,7 @@ SERVICE_GROUPS = {
         "items": ["tax_zivnostnik", "tax_employee", "tax_fop"],
     },
     "legal": {
-        "title": "📍 Юридична адреса та митниця",
+        "title": "📍 Юридична адреса та митниця (EORI)",
         "description": "Адреса для бізнесу, EORI та супровід суміжних адміністративних процесів.",
         "items": ["legal_address", "eori_registration"],
     },
@@ -562,7 +552,7 @@ def format_steps(items):
 def services_overview_text():
     return (
         "📋 Послуги BUH.SK\n\n"
-        "Людина, яка приходить у бот з реклами, зазвичай хоче швидко зрозуміти 4 речі:\n"
+        "Зазвичай клієнт хоче швидко зрозуміти 4 речі:\n"
         "• чи надаємо ми потрібну послугу\n"
         "• як саме проходить процес\n"
         "• які документи потрібні\n"
@@ -683,34 +673,17 @@ def fallback_handler(message):
 
 
 
-# --- 2. ВЕБ-СЕРВЕР ДЛЯ ХОСТИНГА (ПОРТ 3000) ---
-class WebhookServer(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"Bot is running alive!")
-
-def run_web_server():
-    server_address = ('0.0.0.0', 3000) # Тот самый порт 3000 из панели
-    httpd = HTTPServer(server_address, WebhookServer)
-    print("Веб-сервер заглушки запущен на порту 3000...")
-    httpd.serve_forever()
-
-
 
 
 def run_bot():
-    print("Запуск Telegram бота...")
+    now = datetime.datetime.now()
+    time = now.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{time}]  Запуск Telegram бота...\n", flush=True)
     bot.infinity_polling()
 
 # --- 3. ЗАПУСК ОБОИХПРОЦЕССОВ ОДНОВРЕМЕННО ---
 if __name__ == "__main__":
     # Запускаем Телеграм-бота в отдельном фоновом потоке
-    bot_thread = threading.Thread(target=run_bot)
-    bot_thread.daemon = True
-    bot_thread.start()
+   run_bot()
     
-    # Главный поток отдаем веб-серверу, чтобы контейнер не закрывался
-    run_web_server()
 
