@@ -1,0 +1,94 @@
+name: Publish approved BUH.SK Telegram post
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  issues: write
+
+jobs:
+  publish:
+    if: github.event.label.name == 'tg-publish' && github.event.issue.pull_request == null
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send approved post and save Telegram link
+        env:
+          BUH_TG_BOT_TOKEN: ${{ secrets.BUH_TG_BOT_TOKEN }}
+          TG_CHANNEL: "@buh_sk_ua"
+          GITHUB_EVENT_FILE: ${{ github.event_path }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import html
+          import json
+          import os
+          import re
+          import sys
+          import urllib.parse
+          import urllib.request
+
+          with open(os.environ["GITHUB_EVENT_FILE"], encoding="utf-8") as f:
+              event = json.load(f)
+
+          issue = event["issue"]
+          message = (issue.get("body") or "").strip()
+          if not message:
+              raise SystemExit("The issue body is empty: nothing to publish.")
+
+          token = os.environ.get("BUH_TG_BOT_TOKEN", "")
+          if not token:
+              raise SystemExit("Set BUH_TG_BOT_TOKEN in GitHub Actions secrets.")
+
+          api_root = "https://api.github.com/repos/" + os.environ["GH_REPO"]
+          gh_headers = {
+              "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+          issue_url = api_root + "/issues/" + str(issue["number"])
+          comments_req = urllib.request.Request(issue_url + "/comments?per_page=100", headers=gh_headers)
+          with urllib.request.urlopen(comments_req, timeout=20) as response:
+              comments = json.load(response)
+          if any((c.get("body") or "").startswith("✅ BUH.SK TG опубліковано:") for c in comments):
+              print("Post is already marked published. Skipping to avoid duplicates.")
+              sys.exit(0)
+
+          # Convert simple ChatGPT Markdown bold formatting to Telegram-supported HTML.
+          rendered = html.escape(message)
+          rendered = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", rendered)
+          if len(rendered) > 4096:
+              raise SystemExit("Telegram text exceeds 4096 characters.")
+
+          payload = urllib.parse.urlencode({
+              "chat_id": os.environ["TG_CHANNEL"],
+              "text": rendered,
+              "parse_mode": "HTML",
+          }).encode("utf-8")
+          request = urllib.request.Request(
+              "https://api.telegram.org/bot" + token + "/sendMessage",
+              data=payload,
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=25) as response:
+                  result = json.load(response)
+          except Exception:
+              # Do not expose secret-bearing request URLs in logs.
+              print("Telegram publish failed: check admin rights and secret.", file=sys.stderr)
+              sys.exit(1)
+          if not result.get("ok"):
+              raise SystemExit("Telegram did not confirm publishing.")
+
+          post_url = "https://t.me/buh_sk_ua/" + str(result["result"]["message_id"])
+          print("Published: " + post_url)
+          comment = json.dumps({"body": "✅ BUH.SK TG опубліковано: " + post_url}, ensure_ascii=False).encode("utf-8")
+          comment_headers = {**gh_headers, "Content-Type": "application/json"}
+          comment_req = urllib.request.Request(issue_url + "/comments", headers=comment_headers, data=comment, method="POST")
+          try:
+              with urllib.request.urlopen(comment_req, timeout=20):
+                  pass
+          except Exception:
+              print("Telegram published successfully, but GitHub comment failed. Do NOT retry blindly.", file=sys.stderr)
+          PY
