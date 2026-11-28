@@ -23,6 +23,12 @@ sudo bash deploy/ubuntu/setup_ubuntu.sh
 
 The one-time installer creates the `buhnews` service user, Python environment, persistent approval listener, daily 18:00 Europe/Bratislava research timer, hourly expiry timer, and systemd units. Put the private Healthchecks URL in `HEALTHCHECKS_PING_URL` in `.env`; it is pinged only after a successful daily worker run. Keep `NEWS_MODE=preview` and `PUBLISHING_ENABLED=false` until production is explicitly ready.
 
+### Runtime responsibilities
+
+`buh-news-agent.service` is the always-on Telegram listener. It receives only owner approval/change callbacks and, after a change selection, creates a new checked draft. `buh-news-research.service` is a one-shot complete research workflow: discovery, ranking, article writing, proofreading, factual review, and Telegram preview delivery. It automatically requires the listener and is normally started by the daily timer; manually starting this one service runs the same end-to-end workflow. `buh-news-maintenance.service` expires old approvals hourly. The OpenAI ranking, writing, proofreading, and review stages are sequential calls inside the research worker, not additional Linux services.
+
+Official sources in the allowlist (MF SR, Finančná správa, Sociálna poisťovňa, NBS) skip the extra AI factual-review call only when the fetched final URL is HTTPS on that source's registered domain. Source evidence, proofreading, Ukrainian-language and length checks still apply. If a replacement topic fails editorial validation, it is excluded from that run's choices and the owner immediately gets the next three available topics. The owner can press **Виправити**, send one text instruction, and receive a fully revised post for review; the instruction does not directly replace the post. Corrections are limited by `MAX_AI_REVISIONS_PER_DRAFT`.
+
 ## Validate sources and test privately
 
 ```bash

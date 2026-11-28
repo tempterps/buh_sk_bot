@@ -1,6 +1,7 @@
 [Unit]
 Description=BUH.SK daily news research
-After=network-online.target
+Requires=buh-news-agent.service
+After=network-online.target buh-news-agent.service
 
 [Service]
 Type=oneshot
