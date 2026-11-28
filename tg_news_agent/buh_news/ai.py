@@ -10,6 +10,8 @@ WRITING_SCHEMA={"type":"object","additionalProperties":False,"properties":{"post
 REVIEW_SCHEMA={"type":"object","additionalProperties":False,"properties":{"passed":{"type":"boolean"},"unsupported_claims":{"type":"array","items":{"type":"string"}},"notes":{"type":"array","items":{"type":"string"}}},"required":["passed","unsupported_claims","notes"]}
 PROOFREAD_SCHEMA={"type":"object","additionalProperties":False,"properties":{"post":{"type":"string"},"status":{"type":"string","enum":["ready","insufficient_evidence"]}},"required":["post","status"]}
 class BudgetError(RuntimeError): pass
+class AIResponseFormatError(ValueError):
+    """The API replied, but its structured output could not be used."""
 
 class AI:
     def __init__(self, store, settings: Settings): self.store=store; self.s=settings
@@ -31,6 +33,9 @@ class AI:
         rid=self.reserve(run_id,stage,model,max_input,max_output)
         body={'model':model,'input':[{'role':'user','content':[{'type':'input_text','text':prompt}]}],'max_output_tokens':max_output,'text':{'format':{'type':'json_schema','name':f'{stage}_result','strict':True,'schema':schema}}}
         self.store.append_agent_trace({'event':'agent_request','reservation_id':rid,'run_id':run_id,'stage':stage,'model':model,'prompt':prompt,'max_input_tokens':max_input,'max_output_tokens':max_output,'schema_name':f'{stage}_result','at':datetime.now(self.s.timezone).isoformat()})
+        billed=False
+        data=None
+        text=''
         try:
             response=requests.post(self.s.api_url,headers={'Authorization':f'Bearer {self.s.openai_key}','Content-Type':'application/json'},json=body,timeout=(10,90))
             if not response.ok:
@@ -38,15 +43,25 @@ class AI:
                 except ValueError: detail=response.text
                 raise RuntimeError(f'OpenAI HTTP {response.status_code}: {detail[:1000]}')
             data=response.json()
-            text=''.join(part.get('text','') for output in data.get('output',[]) for part in output.get('content',[]) if part.get('type')=='output_text'); result=json.loads(text)
+            text=''.join(part.get('text','') for output in data.get('output',[]) for part in output.get('content',[]) if part.get('type')=='output_text')
             usage=data.get('usage',{}); inp=int(usage.get('input_tokens',0)); out=int(usage.get('output_tokens',0)); reasoning=int(usage.get('output_tokens_details',{}).get('reasoning_tokens',0)); actual=self._price(stage,inp,out+reasoning)
             with self.store.locked() as state: state['ai_reservations'][rid].update(actual_usd=str(actual),input_tokens=inp,output_tokens=out,reasoning_tokens=reasoning,status='reconciled')
+            billed=True
             self.store.append_usage({'event':'reconciled','reservation_id':rid,'run_id':run_id,'stage':stage,'model':model,'input_tokens':inp,'output_tokens':out,'reasoning_tokens':reasoning,'actual_usd':str(actual),'at':datetime.now(self.s.timezone).isoformat()})
+            if data.get('status')=='incomplete':
+                reason=data.get('incomplete_details') or {}
+                raise AIResponseFormatError(f'incomplete {stage} response: {reason.get("reason", "unknown reason")}')
+            try: result=json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise AIResponseFormatError(f'invalid {stage} JSON: {exc}') from exc
             self.store.append_agent_trace({'event':'agent_response','reservation_id':rid,'run_id':run_id,'stage':stage,'model':model,'response_id':data.get('id'),'raw_output_text':text,'parsed_response':result,'usage':{'input_tokens':inp,'output_tokens':out,'reasoning_tokens':reasoning},'actual_usd':str(actual),'at':datetime.now(self.s.timezone).isoformat()})
             return result
         except Exception as exc:
-            with self.store.locked() as state: state['ai_reservations'][rid]['status']='held'
-            self.store.append_usage({'event':'held','reservation_id':rid,'run_id':run_id,'stage':stage,'model':model,'reason':type(exc).__name__,'at':datetime.now(self.s.timezone).isoformat()})
+            if not billed:
+                with self.store.locked() as state: state['ai_reservations'][rid]['status']='held'
+                self.store.append_usage({'event':'held','reservation_id':rid,'run_id':run_id,'stage':stage,'model':model,'reason':type(exc).__name__,'at':datetime.now(self.s.timezone).isoformat()})
+            elif isinstance(exc,AIResponseFormatError):
+                self.store.append_agent_trace({'event':'agent_response_invalid','reservation_id':rid,'run_id':run_id,'stage':stage,'model':model,'response_id':data.get('id'),'status':data.get('status'),'incomplete_details':data.get('incomplete_details'),'raw_output_text':text,'at':datetime.now(self.s.timezone).isoformat()})
             self.store.append_agent_trace({'event':'agent_error','reservation_id':rid,'run_id':run_id,'stage':stage,'model':model,'error_type':type(exc).__name__,'error_message':str(exc)[:2000],'at':datetime.now(self.s.timezone).isoformat()})
             raise
 

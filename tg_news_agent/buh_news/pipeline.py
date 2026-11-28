@@ -5,7 +5,7 @@ import json, uuid
 import logging
 import re
 from urllib.parse import urlsplit
-from .ai import AI, BudgetError, RANKING_SCHEMA, WRITING_SCHEMA, REVIEW_SCHEMA, PROOFREAD_SCHEMA, STYLE
+from .ai import AI, AIResponseFormatError, BudgetError, RANKING_SCHEMA, WRITING_SCHEMA, REVIEW_SCHEMA, PROOFREAD_SCHEMA, STYLE
 from .discovery import Fetcher, extract_article, url_hash
 from .registry import SOURCES
 from .policy import evidence_ready
@@ -277,9 +277,31 @@ class ResearchPipeline:
             return self._finish(run_id,'research_partial' if bad else 'no_suitable_news',ok,bad,0,reason='no_pending_articles')
         ranking_rows=rows[:12]
         with self.store.locked() as s: s['research_runs'][run_id]['ranking_considered_count']=len(ranking_rows)
-        try: ranked=self.ai.call(run_id,'ranking',self.s.ranking_model,_ranking_prompt(ranking_rows,recent_topics,examples('preference',self.store)),RANKING_SCHEMA,12000,2000)['rankings']
+        preference_examples=examples('preference',self.store)
+        try:
+            try:
+                ranked=self.ai.call(run_id,'ranking',self.s.ranking_model,
+                                    _ranking_prompt(ranking_rows,recent_topics,preference_examples),
+                                    RANKING_SCHEMA,12000,6000)['rankings']
+            except AIResponseFormatError as exc:
+                # A long strict-JSON response can exceed the model's output
+                # cap. Retry once in smaller independent batches; scores stay
+                # comparable because all batches use the same rubric.
+                self._append_run_log({'event':'ranking_retry','run_id':run_id,
+                                      'reason':str(exc)[:500], 'batch_size':4})
+                ranked=[]
+                for start in range(0,len(ranking_rows),4):
+                    batch=ranking_rows[start:start+4]
+                    ranked.extend(self.ai.call(run_id,'ranking',self.s.ranking_model,
+                                               _ranking_prompt(batch,recent_topics,preference_examples),
+                                               RANKING_SCHEMA,12000,3000)['rankings'])
         except BudgetError: return self._finish(run_id,'budget_exhausted',ok,bad,len(rows),reason='ranking_budget_exhausted')
-        except Exception as exc: return self._finish(run_id,'research_partial',ok,bad,len(rows),str(exc),reason='ranking_error')
+        except Exception as exc:
+            result=self._finish(run_id,'research_partial',ok,bad,len(rows),str(exc),reason='ranking_error')
+            if self.notifier:
+                try: self.notifier.send_ranking_error(run_id)
+                except Exception: logging.exception('Could not notify owner about ranking error for run %s',run_id)
+            return result
         by_id={x['id']:x for x in ranking_rows}
         for candidate in ranked:
             if candidate['candidate_id'] in by_id:

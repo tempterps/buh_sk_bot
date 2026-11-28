@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from buh_news.db import FileStore
 from buh_news.discovery import Item
 from buh_news.pipeline import ResearchPipeline
+from buh_news.ai import AIResponseFormatError
 
 
 def test_manual_run_bypasses_only_daily_draft_limit(tmp_path, monkeypatch):
@@ -118,6 +119,69 @@ def test_low_ranked_stories_are_offered_when_none_qualify(tmp_path, monkeypatch)
         assert state['drafts'] == {}
     assert 'Тема 3' in sent[-1][0]
     assert 'Тема 4' not in sent[-1][0]
+
+
+def test_incomplete_ranking_is_retried_in_small_batches(tmp_path, monkeypatch):
+    from buh_news.telegram import OwnerBot
+    store = FileStore(tmp_path)
+    tz = ZoneInfo('Europe/Bratislava')
+    with store.locked() as state:
+        state['sources']['kros_legislation'] = {'id': 'kros_legislation', 'enabled': True,
+                                                'priority': 1, 'method': 'rss'}
+    settings = SimpleNamespace(user_agent='test', timezone=tz, max_candidates=30,
+                               ranking_model='rank', approval_hours=24, owner_chat_id=123)
+    owner = object.__new__(OwnerBot)
+    owner.store = store
+    owner.s = settings
+    sent = []
+    owner.bot = SimpleNamespace(send_message=lambda _chat_id, text, **kwargs: sent.append(text))
+    pipeline = ResearchPipeline(store, settings, owner)
+    items = [Item('kros_legislation', f'Headline {i}', f'https://www.kros.sk/blog/news-{i}',
+                  datetime.now(tz), None, [], f'Summary {i}') for i in range(1, 13)]
+    monkeypatch.setattr('buh_news.pipeline.seed_sources', lambda _store: None)
+    monkeypatch.setattr(pipeline.fetcher, 'feed', lambda _source: (items, SimpleNamespace(headers={})))
+    calls = []
+    def rank(_run_id, stage, _model, prompt, _schema, _max_input, max_output):
+        calls.append(max_output)
+        if len(calls) == 1:
+            raise AIResponseFormatError('incomplete ranking response: max_output_tokens')
+        import json
+        candidates = json.loads(prompt.split('CANDIDATES=', 1)[1].split('\n', 1)[0])
+        return {'rankings': [
+            {'candidate_id': candidate['candidate_id'], 'topic_key': f"topic-{candidate['candidate_id']}",
+             'owner_title': f"Тема {candidate['candidate_id']}", 'audience_impact': 'Суть',
+             'personal_relevance': 1, 'practical_impact': 1, 'surprise': 1,
+             'shareability': 1, 'service_relevance': 0,
+             'needs_primary_verification': True, 'recommendation': 'reject'}
+            for candidate in candidates]}
+    monkeypatch.setattr(pipeline.ai, 'call', rank)
+    assert pipeline.run(manual=True) == 'owner_choice_pending'
+    assert calls == [6000, 3000, 3000, 3000]
+    with store.locked() as state:
+        run = next(iter(state['research_runs'].values()))
+        assert len(run['ranked_candidates']) == 12
+    assert sent
+    entries = [json.loads(line) for line in store.run_log_path.read_text(encoding='utf-8').splitlines()]
+    assert any(entry['event'] == 'ranking_retry' for entry in entries)
+
+
+def test_permanent_ranking_error_notifies_owner(tmp_path, monkeypatch):
+    store = FileStore(tmp_path)
+    tz = ZoneInfo('Europe/Bratislava')
+    with store.locked() as state:
+        state['sources']['test'] = {'id': 'test', 'enabled': True, 'priority': 1, 'method': 'rss'}
+    settings = SimpleNamespace(user_agent='test', timezone=tz, max_candidates=30, ranking_model='rank')
+    notified = []
+    pipeline = ResearchPipeline(store, settings, SimpleNamespace(send_ranking_error=notified.append))
+    item = Item('test', 'Test headline', 'https://example.org/news', datetime.now(tz), None, [], 'Summary')
+    monkeypatch.setattr('buh_news.pipeline.seed_sources', lambda _store: None)
+    monkeypatch.setattr(pipeline.fetcher, 'feed', lambda _source: ([item], SimpleNamespace(headers={})))
+    monkeypatch.setattr(pipeline.ai, 'call', lambda *_args: (_ for _ in ()).throw(AIResponseFormatError('bad JSON')))
+    assert pipeline.run(manual=True) == 'research_partial'
+    with store.locked() as state:
+        run = next(iter(state['research_runs'].values()))
+        assert run['stop_reason'] == 'ranking_error'
+        assert notified == [run['id']]
 
 
 def test_owner_selected_low_ranked_topic_gets_full_editorial_review(tmp_path, monkeypatch):

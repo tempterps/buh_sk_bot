@@ -28,6 +28,12 @@ class OwnerBot:
     def send_no_news(self,run_id):
         self.bot.send_message(self.s.owner_chat_id,
             'Сьогодні не знайшов придатних новин для поста і не маю оцінених тем, які можна запропонувати. Спробуйте наступний запуск.')
+    def send_ranking_error(self,run_id):
+        cost=self.store.run_cost(run_id)
+        self.bot.send_message(self.s.owner_chat_id,
+            'Не вдалося завершити оцінювання новин: відповідь AI була неповною або сталася помилка. '
+            f'Новий пост не створено. AI за цей запуск: ${cost:.6f}. '
+            'Причину записано в data/research_runs.jsonl (stop_reason: ranking_error).')
     def send_fallback_offer(self,run_id):
         with self.store.locked() as state:
             run=state['research_runs'][run_id]
