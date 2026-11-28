@@ -1,8 +1,8 @@
 [Unit]
-Description=Run BUH.SK research at 08:00 Bratislava time
+Description=Run BUH.SK research daily at 18:00 Bratislava time
 
 [Timer]
-OnCalendar=*-*-* 08:00:00
+OnCalendar=*-*-* 18:00:00
 Timezone=Europe/Bratislava
 Persistent=true
 Unit=buh-news-research.service

@@ -12,20 +12,16 @@ If the existing customer bot must be used, its server must securely forward only
 
 ## Deploy on Ubuntu
 
+Use the supplied systemd deployment, not a permanently sleeping worker container. The Telegram approval bot must stay online for callbacks; the research worker runs once per day and exits. Docker Compose remains available for local development, but systemd is the production setup for `/opt/buh_sk_news_bot`.
+
 ```bash
-sudo useradd --system --create-home buhnews
-sudo mkdir -p /opt/buh-news-agent
-sudo chown buhnews:buhnews /opt/buh-news-agent
-cd /opt/buh-news-agent
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-cp .env.example .env && chmod 600 .env
-# fill the required values; keep NEWS_MODE=preview and PUBLISHING_ENABLED=false
-.venv/bin/python -m buh_news migrate
-.venv/bin/python -m buh_news seed-sources
+mkdir -p /opt/buh_sk_news_bot
+# copy this complete project into /opt/buh_sk_news_bot, including its populated .env
+cd /opt/buh_sk_news_bot
+sudo bash deploy/ubuntu/setup_ubuntu.sh
 ```
 
-Docker Compose mounts `./data` into the application container, so state survives container replacement.
+The one-time installer creates the `buhnews` service user, Python environment, persistent approval listener, daily 18:00 Europe/Bratislava research timer, hourly expiry timer, and systemd units. Put the private Healthchecks URL in `HEALTHCHECKS_PING_URL` in `.env`; it is pinged only after a successful daily worker run. Keep `NEWS_MODE=preview` and `PUBLISHING_ENABLED=false` until production is explicitly ready.
 
 ## Validate sources and test privately
 

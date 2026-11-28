@@ -5,7 +5,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 User=buhnews
-WorkingDirectory=/opt/buh-news-agent
-EnvironmentFile=/opt/buh-news-agent/.env
-ExecStart=/opt/buh-news-agent/.venv/bin/python -m buh_news run
+WorkingDirectory=/opt/buh_sk_news_bot
+EnvironmentFile=/opt/buh_sk_news_bot/.env
+ExecStart=/opt/buh_sk_news_bot/deploy/ubuntu/run-research.sh
 
