@@ -2,6 +2,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from hashlib import sha256
 import json, uuid
+import logging
 import re
 from urllib.parse import urlsplit
 from .ai import AI, BudgetError, RANKING_SCHEMA, WRITING_SCHEMA, REVIEW_SCHEMA, PROOFREAD_SCHEMA, STYLE
@@ -108,6 +109,53 @@ def _writing_prompt(article,final_url,full,previous_post=None,instructions=None,
 
 class ResearchPipeline:
     def __init__(self,store,settings,notifier=None): self.store=store; self.s=settings; self.fetcher=Fetcher(settings.user_agent); self.ai=AI(store,settings); self.notifier=notifier
+    def _append_run_log(self, record):
+        secrets=[value for name in ('openai_key','telegram_token','searxng_url')
+                 if (value:=getattr(self.s,name,None))]
+        def redact(value):
+            if isinstance(value,str):
+                for secret in secrets: value=value.replace(secret,'[REDACTED]')
+                return value
+            if isinstance(value,list): return [redact(item) for item in value]
+            if isinstance(value,dict): return {key:redact(item) for key,item in value.items()}
+            return value
+        try: self.store.append_run_log(redact(record))
+        except Exception: logging.exception('Could not write research run log')
+
+    def _log_completion(self, run_id, event='finished'):
+        try:
+            with self.store.locked() as state:
+                run=state['research_runs'].get(run_id,{})
+                ranked=[{
+                    'article_id': choice['article_id'],
+                    'source_id': state['articles'].get(str(choice['article_id']),{}).get('source_id'),
+                    'score': choice.get('score'),
+                    'recommendation': choice.get('recommendation'),
+                    'needs_primary_verification': choice.get('needs_primary_verification'),
+                    'title': choice.get('title_uk','')[:200],
+                } for choice in run.get('ranked_candidates',[])]
+                attempts=[{
+                    'article_id': attempt.get('article_id'),
+                    'source_id': attempt.get('source_id'),
+                    'error_type': attempt.get('error_type'),
+                    'error': attempt.get('error'),
+                    'review': attempt.get('review'),
+                } for attempt in run.get('attempted_candidates',[])]
+                record={
+                    'event': event, 'run_id': run_id, 'manual': run.get('manual'),
+                    'started_at': run.get('started_at'), 'finished_at': run.get('finished_at'),
+                    'status': run.get('status'), 'stop_reason': run.get('stop_reason'),
+                    'error': run.get('error'), 'source_successes': run.get('source_successes'),
+                    'source_failures': run.get('source_failures'), 'source_errors': run.get('source_errors',[]),
+                    'candidate_count': run.get('candidate_count'),
+                    'ranking_considered_count': run.get('ranking_considered_count',0),
+                    'ranked_candidates': ranked, 'attempted_candidates': attempts,
+                    'draft_id': run.get('draft_id'),
+                }
+            record['ai_cost_usd']=str(self.store.run_cost(run_id))
+            self._append_run_log(record)
+        except Exception:
+            logging.exception('Could not build research run log for %s',run_id)
     def _proofread(self,run_id,draft,owner_instructions=None):
         prompt=(
             "You are the final proofreader for a Ukrainian BUH.SK Telegram business-news post. Preserve the one meaningful, personally relevant idea and its verified distinctions. "
@@ -145,11 +193,34 @@ class ResearchPipeline:
         review['method']='ai_review'
         return review
     def run(self, manual: bool = False):
-        self.store.init(); seed_sources(self.store); run_id=str(uuid.uuid4()); now=datetime.now(self.s.timezone)
+        run_id=str(uuid.uuid4())
+        try:
+            return self._run(run_id,manual)
+        except Exception as exc:
+            try:
+                with self.store.locked() as state:
+                    run=state['research_runs'].get(run_id)
+                    if run and run['status']=='running':
+                        run.update(status='research_failed',finished_at=datetime.now(self.s.timezone).isoformat(),
+                                   stop_reason='unhandled_exception',error=f'{type(exc).__name__}: {str(exc)[:1000]}')
+                self._log_completion(run_id,event='failed')
+            except Exception:
+                logging.exception('Could not record failed research run %s',run_id)
+            raise
+
+    def _run(self,run_id,manual):
+        self.store.init(); seed_sources(self.store); now=datetime.now(self.s.timezone)
         with self.store.locked() as s:
-            if any(r['status']=='running' for r in s['research_runs'].values()): return None
-            s['research_runs'][run_id]={'id':run_id,'started_at':now.isoformat(),'finished_at':None,'status':'running','manual':manual,'source_successes':0,'source_failures':0,'candidate_count':0,'error':None}
-            sources=[x.copy() for x in s['sources'].values() if x['enabled']]
+            active=next((r['id'] for r in s['research_runs'].values() if r['status']=='running'),None)
+            if not active:
+                s['research_runs'][run_id]={'id':run_id,'started_at':now.isoformat(),'finished_at':None,'status':'running','manual':manual,'source_successes':0,'source_failures':0,'source_errors':[],'candidate_count':0,'error':None}
+                sources=[x.copy() for x in s['sources'].values() if x['enabled']]
+        if active:
+            self._append_run_log({'event':'skipped_concurrent','run_id':run_id,'manual':manual,
+                                  'started_at':now.isoformat(),'active_run_id':active})
+            return None
+        self._append_run_log({'event':'started','run_id':run_id,'manual':manual,'started_at':now.isoformat(),
+                              'enabled_source_count':len(sources)})
         items=[]; ok=bad=0
         for source in sorted(sources,key=lambda x:(x['priority'],x['id'])):
             try:
@@ -158,18 +229,21 @@ class ResearchPipeline:
                     row=s['sources'][source['id']]; row.update(last_success_at=datetime.now(self.s.timezone).isoformat(),etag=response.headers.get('ETag'),last_modified=response.headers.get('Last-Modified'),last_watermark=iso(max((x.published_at for x in found if x.published_at),default=None)) or row.get('last_watermark'),last_error=None)
             except Exception as exc:
                 bad+=1
-                with self.store.locked() as s: s['sources'][source['id']]['last_error']=str(exc)[:1000]
+                with self.store.locked() as s:
+                    s['sources'][source['id']]['last_error']=str(exc)[:1000]
+                    s['research_runs'][run_id]['source_errors'].append({'source_id':source['id'],'error_type':type(exc).__name__,'error':str(exc)[:500]})
         _save_items(self.store,list({x.canonical_url:x for x in items}.values()))
         with self.store.locked() as s:
             pending=[x.copy() for x in s['articles'].values() if x.get('processed_at') is None]
             recent_topics=sorted(({'topic_key':x['topic_key'],'summary':x.get('summary',''),'last_selected_at':x.get('last_selected_at')}
                                   for x in s['topics'].values()),key=lambda x:x['last_selected_at'] or '',reverse=True)[:15]
         rows=_balanced(pending,self.s.max_candidates)
-        if not rows: return self._finish(run_id,'research_partial' if bad else 'no_suitable_news',ok,bad,0)
+        if not rows: return self._finish(run_id,'research_partial' if bad else 'no_suitable_news',ok,bad,0,reason='no_pending_articles')
         ranking_rows=rows[:12]
+        with self.store.locked() as s: s['research_runs'][run_id]['ranking_considered_count']=len(ranking_rows)
         try: ranked=self.ai.call(run_id,'ranking',self.s.ranking_model,_ranking_prompt(ranking_rows,recent_topics,examples('preference',self.store)),RANKING_SCHEMA,12000,2000)['rankings']
-        except BudgetError: return self._finish(run_id,'budget_exhausted',ok,bad,len(rows))
-        except Exception as exc: return self._finish(run_id,'research_partial',ok,bad,len(rows),str(exc))
+        except BudgetError: return self._finish(run_id,'budget_exhausted',ok,bad,len(rows),reason='ranking_budget_exhausted')
+        except Exception as exc: return self._finish(run_id,'research_partial',ok,bad,len(rows),str(exc),reason='ranking_error')
         by_id={x['id']:x for x in ranking_rows}
         for candidate in ranked:
             if candidate['candidate_id'] in by_id:
@@ -186,7 +260,7 @@ class ResearchPipeline:
         # score alone. Unverified discovery leads and 0–7 topics stay out.
         choices=[x for x in ranked if x['candidate_id'] in by_id and _ranking_recommendation(x)!='reject'
                  and not _needs_primary_verification(x)]
-        if not choices: return self._finish(run_id,'research_partial' if bad else 'no_suitable_news',ok,bad,len(rows))
+        if not choices: return self._finish(run_id,'research_partial' if bad else 'no_suitable_news',ok,bad,len(rows),reason='no_ranked_candidates_eligible')
         # A scheduled run needs no human orchestration: try the next ranked topic
         # when a stronger one cannot clear evidence or language review.
         ordered=sorted(choices,key=_ranking_score,reverse=True)[:self.s.max_articles]
@@ -206,20 +280,21 @@ class ResearchPipeline:
                 attempt['review']={'passed':review['passed'],'unsupported_claims':review['unsupported_claims']}
                 attempts.append(attempt)
                 selected=(ranking,article,draft,review,attempt); break
-            except BudgetError:
+            except BudgetError as exc:
+                attempt['error_type']=type(exc).__name__; attempt['error']=str(exc)[:1000]
                 attempts.append(attempt)
                 with self.store.locked() as s: s['research_runs'][run_id]['attempted_candidates']=attempts
-                return self._finish(run_id,'budget_exhausted',ok,bad,len(rows))
+                return self._finish(run_id,'budget_exhausted',ok,bad,len(rows),reason='drafting_budget_exhausted')
             except DraftValidationError as exc:
-                attempt['error']=str(exc)[:1000]; attempts.append(attempt)
+                attempt['error_type']=type(exc).__name__; attempt['error']=str(exc)[:1000]; attempts.append(attempt)
                 with self.store.locked() as s:
                     for candidate in s['research_runs'][run_id]['ranked_candidates']:
                         if candidate['article_id']==article['id']: candidate['recommendation']='reject'
             except Exception as exc:
-                attempt['error']=str(exc)[:1000]; attempts.append(attempt)
+                attempt['error_type']=type(exc).__name__; attempt['error']=str(exc)[:1000]; attempts.append(attempt)
         with self.store.locked() as s: s['research_runs'][run_id]['attempted_candidates']=attempts
         if selected is None:
-            return self._finish(run_id,'research_partial',ok,bad,len(rows),'no ranked candidate produced a publishable draft')
+            return self._finish(run_id,'research_partial',ok,bad,len(rows),'no ranked candidate produced a publishable draft',reason='all_draft_attempts_failed')
         ranking,article,draft,review,selected_attempt=selected
         with self.store.locked() as s:
             s['research_runs'][run_id]['selected_candidate']=selected_attempt
@@ -231,9 +306,10 @@ class ResearchPipeline:
                 s['drafts'][draft_id]={'id':draft_id,'article_id':article['id'],'topic_key':topic,'status':'pending','current_version':1,'approval_expires_at':(now+timedelta(hours=self.s.approval_hours)).isoformat(),'revision_count':0,'run_id':run_id,'created_at':now.isoformat(),'updated_at':now.isoformat()}
                 s['versions'][draft_id]={'1':{'version':1,'article_id':article['id'],'content':draft['post'],'content_hash':h,'evidence':draft['evidence'],'review':review,'review_passed':True,'preview_message_id':None,'note_message_id':None,'created_at':now.isoformat()}}
             else: draft_id=None
-        if draft_id is None: return self._finish(run_id,'no_suitable_news',ok,bad,len(rows),'daily draft limit reached')
+        if draft_id is None: return self._finish(run_id,'no_suitable_news',ok,bad,len(rows),'daily draft limit reached',reason='daily_draft_limit_reached')
+        with self.store.locked() as s: s['research_runs'][run_id]['draft_id']=draft_id
         if self.notifier: self.notifier.send_preview(draft_id)
-        return self._finish(run_id,'draft_created',ok,bad,len(rows))
+        return self._finish(run_id,'draft_created',ok,bad,len(rows),reason='draft_sent_for_approval')
 
     def redraft(self,draft_id,article_id=None,instructions=None):
         """Create a new, evidence-reviewed version of a pending draft.
@@ -293,6 +369,7 @@ class ResearchPipeline:
         if self.notifier:
             self.notifier.send_preview(draft_id)
         return 'redraft_created'
-    def _finish(self,run_id,status,ok,bad,count,error=None):
-        with self.store.locked() as s: s['research_runs'][run_id].update(status=status,finished_at=datetime.now(self.s.timezone).isoformat(),source_successes=ok,source_failures=bad,candidate_count=count,error=error)
+    def _finish(self,run_id,status,ok,bad,count,error=None,reason=None):
+        with self.store.locked() as s: s['research_runs'][run_id].update(status=status,finished_at=datetime.now(self.s.timezone).isoformat(),source_successes=ok,source_failures=bad,candidate_count=count,error=error,stop_reason=reason or status)
+        self._log_completion(run_id)
         return status

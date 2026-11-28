@@ -1,8 +1,7 @@
 """Atomic low-volume file store.
 
 State is guarded by an inter-process lock and written with atomic rename. AI
-usage and agent handoffs are additionally kept in separate append-only JSONL
-ledgers.
+usage, agent handoffs, and research runs are kept in append-only JSONL ledgers.
 """
 from __future__ import annotations
 from contextlib import contextmanager
@@ -16,7 +15,7 @@ def _initial():
 
 class FileStore:
     def __init__(self, root: Path):
-        self.root=root; self.state_path=root/'state.json'; self.lock_path=root/'state.lock'; self.usage_path=root/'ai_usage.jsonl'; self.agent_trace_path=root/'agent_trace.jsonl'; self.examples_path=root/'editorial_examples.jsonl'
+        self.root=root; self.state_path=root/'state.json'; self.lock_path=root/'state.lock'; self.usage_path=root/'ai_usage.jsonl'; self.agent_trace_path=root/'agent_trace.jsonl'; self.run_log_path=root/'research_runs.jsonl'; self.examples_path=root/'editorial_examples.jsonl'
     def init(self):
         self.root.mkdir(parents=True,exist_ok=True)
         with self.locked() as state: state.setdefault('sources',{})
@@ -46,6 +45,8 @@ class FileStore:
         self._append_jsonl(self.usage_path,record)
     def append_agent_trace(self, record: dict):
         self._append_jsonl(self.agent_trace_path,record)
+    def append_run_log(self, record: dict):
+        self._append_jsonl(self.run_log_path,record)
     def append_example_once(self, record: dict) -> bool:
         """Keep approved examples in a private, idempotent local ledger."""
         self.root.mkdir(parents=True,exist_ok=True)

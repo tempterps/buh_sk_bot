@@ -2,7 +2,9 @@
 
 This agent is independent of the customer-service bot and persists its low-volume state in local files. It does not require PostgreSQL or n8n.
 
-`data/state.json` contains sources, articles, drafts, approvals and outbox state. Writes are inter-process locked and atomic. `data/ai_usage.jsonl` is an append-only ledger containing each AI reservation, returned token use, reconciled cost, and held/failed call. `data/agent_trace.jsonl` records the full prompt and response for each ranking, writing, proofreading, and factual-review handoff. It can contain source/article content, so keep `data/` out of Git and back it up on the Ubuntu host. The agent sets its JSONL log files to owner-read/write only on Linux.
+`data/state.json` contains sources, articles, drafts, approvals and outbox state. Writes are inter-process locked and atomic. `data/ai_usage.jsonl` is an append-only ledger containing each AI reservation, returned token use, reconciled cost, and held/failed call. `data/agent_trace.jsonl` records the full prompt and response for each ranking, writing, proofreading, and factual-review handoff. `data/research_runs.jsonl` is the shared append-only run log for scheduled and `--manual` research: it records start, outcome, source failures, ranking decisions, draft attempts, cost, and unexpected failures, without API keys or full article text. The agent trace can contain source/article content, so keep `data/` out of Git and back it up on the Ubuntu host. The agent sets its JSONL log files to owner-read/write only on Linux.
+
+To inspect the latest completed run on Ubuntu, use `tail -n 1 data/research_runs.jsonl | .venv/bin/python -m json.tool`. The log begins recording runs after this version is deployed; older runs remain in `data/state.json`.
 
 ### Editorial learning from owner feedback
 
