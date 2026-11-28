@@ -47,6 +47,8 @@ runuser -u buhnews -- .venv/bin/python -m buh_news run --manual
 
 Official sources in the allowlist (MF SR, Finančná správa, Sociálna poisťovňa, NBS) skip the extra AI factual-review call only when the fetched final URL is HTTPS on that source's registered domain. Source evidence, proofreading, Ukrainian-language and length checks still apply. If a replacement topic fails editorial validation, it is excluded from that run's choices and the owner immediately gets the next three available topics. The owner can press **Виправити**, send one text instruction, and receive a fully revised post for review; the instruction does not directly replace the post. Corrections are limited by `MAX_AI_REVISIONS_PER_DRAFT`.
 
+`fs_news` and `fs_press` are official sources and can pass ranking without an extra primary-source search; their fetched articles still have to be relevant and pass all writing checks. `kros_legislation` is accepted as a reliable professional source for drafting, but is **not** treated as an official authority: its final URL must remain on HTTPS `kros.sk`, and its post receives an extra AI factual review against the fetched article text. Other KROS categories remain subject to primary-source verification.
+
 ## Validate sources and test privately
 
 ```bash

@@ -15,14 +15,15 @@ def test_manual_run_bypasses_only_daily_draft_limit(tmp_path, monkeypatch):
     today = datetime.now(tz).isoformat()
     with store.locked() as state:
         state['drafts']['earlier'] = {'created_at': today}
-        state['sources']['test'] = {'id': 'test', 'enabled': True, 'priority': 1, 'method': 'rss'}
+        state['sources']['kros_legislation'] = {'id': 'kros_legislation', 'enabled': True,
+                                                'priority': 1, 'method': 'rss'}
 
     settings = SimpleNamespace(user_agent='test', timezone=tz, max_candidates=30,
                                max_articles=3, max_daily_drafts=1, approval_hours=24,
                                ranking_model='rank', writing_model='write')
     sent = []
     pipeline = ResearchPipeline(store, settings, SimpleNamespace(send_preview=sent.append))
-    item = Item('test', 'Test headline', 'https://example.org/news', datetime.now(tz),
+    item = Item('kros_legislation', 'Test headline', 'https://www.kros.sk/blog/news', datetime.now(tz),
                 None, [], 'Test summary')
     monkeypatch.setattr('buh_news.pipeline.seed_sources', lambda _store: None)
     monkeypatch.setattr(pipeline.fetcher, 'feed', lambda _source: ([item], SimpleNamespace(headers={})))
@@ -34,7 +35,7 @@ def test_manual_run_bypasses_only_daily_draft_limit(tmp_path, monkeypatch):
                                   'owner_title': 'Test', 'audience_impact': 'Test impact',
                                   'personal_relevance': 2, 'practical_impact': 2, 'surprise': 2,
                                   'shareability': 2, 'service_relevance': 2,
-                                  'needs_primary_verification': False, 'recommendation': 'select'}]}
+                                  'needs_primary_verification': True, 'recommendation': 'hold'}]}
         return {'status': 'ready', 'post': '<b>Test post</b>', 'evidence': {}}
 
     monkeypatch.setattr(pipeline.ai, 'call', fake_ai)
@@ -55,6 +56,8 @@ def test_manual_run_bypasses_only_daily_draft_limit(tmp_path, monkeypatch):
     assert entries[1]['stop_reason'] == 'daily_draft_limit_reached'
     assert entries[3]['stop_reason'] == 'draft_sent_for_approval'
     assert entries[3]['draft_id'] == sent[0]
+    assert entries[3]['ranked_candidates'][0]['recommendation'] == 'hold'
+    assert entries[3]['ranked_candidates'][0]['needs_primary_verification'] is False
 
 
 def test_manual_flag_reaches_pipeline(tmp_path, monkeypatch, capsys):

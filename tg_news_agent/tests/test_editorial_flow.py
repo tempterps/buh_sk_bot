@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 from buh_news.db import FileStore
 from buh_news.ai import RANKING_SCHEMA, STYLE
 from buh_news.pipeline import (
-    DraftValidationError, ResearchPipeline, _concise_post, _official_source,
+    DraftValidationError, ResearchPipeline, _concise_post, _needs_primary_verification, _official_source,
     _ranking_prompt, _ranking_recommendation, _ranking_score, _writing_prompt,
 )
 from buh_news.telegram import OwnerBot
@@ -51,6 +51,22 @@ def test_editorial_ranking_score_and_thresholds():
     assert all(fields[key]['maximum'] == 2 for key in ('personal_relevance', 'practical_impact', 'surprise', 'shareability', 'service_relevance'))
 
 
+def test_trusted_editorial_sources_pass_ranking_gate_but_not_relevance_gate():
+    candidate = dict.fromkeys(('personal_relevance', 'practical_impact', 'surprise',
+                               'shareability', 'service_relevance'), 2)
+    candidate.update(recommendation='hold', needs_primary_verification=True)
+    for source_id in ('kros_legislation', 'fs_news', 'fs_press'):
+        candidate['source_id'] = source_id
+        assert not _needs_primary_verification(candidate)
+        assert _ranking_recommendation(candidate) == 'hold'
+    for source_id in ('kros_payroll', 'podnikajte'):
+        candidate['source_id'] = source_id
+        assert _needs_primary_verification(candidate)
+    candidate.update(source_id='fs_news', recommendation='select',
+                     personal_relevance=0, practical_impact=0, surprise=0)
+    assert _ranking_recommendation(candidate) == 'reject'
+
+
 def test_editorial_prompts_do_not_force_generic_footer():
     article = {'source_id': 'nbs', 'title': 'Example'}
     prompt = _writing_prompt(article, 'https://nbs.sk/example', 'Source article')
@@ -60,6 +76,9 @@ def test_editorial_prompts_do_not_force_generic_footer():
     assert _concise_post('ї' * 900)
     assert not _concise_post('ї' * 901)
     assert 'RECENT_TOPICS=' in _ranking_prompt([], [{'topic_key': 'old', 'summary': 'Earlier topic'}])
+    assert 'kros_legislation' in _ranking_prompt([])
+    assert 'reliable professional source' in _writing_prompt({'source_id': 'kros_legislation', 'title': 'Example'},
+                                                              'https://www.kros.sk/blog/news', 'Source article')
 
 
 def test_official_source_skips_extra_ai_review():
@@ -79,6 +98,9 @@ def test_official_source_skips_extra_ai_review():
     }
     assert _official_source(article, url)
     assert not _official_source(article, 'https://nbs.sk.evil.example/aktuality')
+    assert _official_source({'source_id': 'fs_news'}, 'https://www.financnasprava.sk/sk/news')
+    assert _official_source({'source_id': 'fs_press'}, 'https://www.financnasprava.sk/sk/press')
+    assert not _official_source({'source_id': 'kros_legislation'}, 'https://www.kros.sk/blog/news')
     assert pipeline._review('run', article, url, draft)['method'] == 'official_source'
 
 
@@ -86,8 +108,8 @@ def test_other_source_still_gets_factual_review():
     calls = []
 
     class ReviewAI:
-        def call(self, *_args, **_kwargs):
-            calls.append(True)
+        def call(self, _run_id, _stage, _model, prompt, *_args, **_kwargs):
+            calls.append(prompt)
             return {'passed': True, 'unsupported_claims': [], 'notes': []}
 
     pipeline = object.__new__(ResearchPipeline)
@@ -100,7 +122,20 @@ def test_other_source_still_gets_factual_review():
         'evidence': {'claims': [{'claim': 'example'}], 'source_urls': [url]},
     }
     assert pipeline._review('run', {'source_id': 'podnikajte'}, url, draft)['method'] == 'ai_review'
-    assert calls == [True]
+    kros_url = 'https://www.kros.sk/blog/legislativa'
+    kros_draft = {**draft, 'evidence': {**draft['evidence'], 'source_urls': [kros_url]}}
+    assert pipeline._review('run', {'source_id': 'kros_legislation'}, kros_url, kros_draft,
+                            'The fetched KROS article')['method'] == 'ai_review'
+    assert len(calls) == 2
+    assert 'SOURCE_ARTICLE=The fetched KROS article' in calls[-1]
+    try:
+        pipeline._review('run', {'source_id': 'kros_legislation'},
+                         'https://kros.sk.evil.example/news', kros_draft)
+    except DraftValidationError as exc:
+        assert 'registered HTTPS domain' in str(exc)
+    else:
+        raise AssertionError('redirect outside the trusted domain must be rejected')
+    assert len(calls) == 2
 
 
 def _owner_bot(tmp_path):
