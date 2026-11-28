@@ -4,7 +4,7 @@ Description=Expire BUH.SK news approvals
 [Service]
 Type=oneshot
 User=buhnews
-WorkingDirectory=/opt/buh_sk_news_bot
-EnvironmentFile=/opt/buh_sk_news_bot/.env
-ExecStart=/opt/buh_sk_news_bot/.venv/bin/python -m buh_news expire
+WorkingDirectory=/opt/buh_sk_news_bot/tg_news_agent
+EnvironmentFile=/opt/buh_sk_news_bot/tg_news_agent/.env
+ExecStart=/opt/buh_sk_news_bot/tg_news_agent/.venv/bin/python -m buh_news expire
 

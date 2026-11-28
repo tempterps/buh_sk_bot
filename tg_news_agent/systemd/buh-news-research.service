@@ -5,7 +5,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 User=buhnews
-WorkingDirectory=/opt/buh_sk_news_bot
-EnvironmentFile=/opt/buh_sk_news_bot/.env
-ExecStart=/opt/buh_sk_news_bot/deploy/ubuntu/run-research.sh
+WorkingDirectory=/opt/buh_sk_news_bot/tg_news_agent
+EnvironmentFile=/opt/buh_sk_news_bot/tg_news_agent/.env
+ExecStart=/opt/buh_sk_news_bot/tg_news_agent/deploy/ubuntu/run-research.sh
 

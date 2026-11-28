@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# One-time Ubuntu installation. Run as root from /opt/buh_sk_news_bot after
+# One-time Ubuntu installation. Run as root from /opt/buh_sk_news_bot/tg_news_agent after
 # copying this repository and its populated .env file to the server.
 set -Eeuo pipefail
 
-readonly APP_DIR=/opt/buh_sk_news_bot
+readonly APP_DIR=/opt/buh_sk_news_bot/tg_news_agent
 readonly SERVICE_USER=buhnews
 readonly SERVICE_GROUP=buhnews
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

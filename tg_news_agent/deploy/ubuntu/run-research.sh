@@ -3,7 +3,7 @@
 # news) pings Healthchecks; an exception leaves the timer run failed.
 set -Eeuo pipefail
 
-readonly APP_DIR=/opt/buh_sk_news_bot
+readonly APP_DIR=/opt/buh_sk_news_bot/tg_news_agent
 readonly PYTHON_BIN="$APP_DIR/.venv/bin/python"
 
 cd "$APP_DIR"

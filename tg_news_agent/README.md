@@ -12,12 +12,12 @@ If the existing customer bot must be used, its server must securely forward only
 
 ## Deploy on Ubuntu
 
-Use the supplied systemd deployment, not a permanently sleeping worker container. The Telegram approval bot must stay online for callbacks; the research worker runs once per day and exits. Docker Compose remains available for local development, but systemd is the production setup for `/opt/buh_sk_news_bot`.
+Use the supplied systemd deployment, not a permanently sleeping worker container. The Telegram approval bot must stay online for callbacks; the research worker runs once per day and exits. Docker Compose remains available for local development, but systemd is the production setup for `/opt/buh_sk_news_bot/tg_news_agent`.
 
 ```bash
 mkdir -p /opt/buh_sk_news_bot
-# copy this complete project into /opt/buh_sk_news_bot, including its populated .env
-cd /opt/buh_sk_news_bot
+# clone/copy the repository into /opt/buh_sk_news_bot and place .env in tg_news_agent
+cd /opt/buh_sk_news_bot/tg_news_agent
 sudo bash deploy/ubuntu/setup_ubuntu.sh
 ```
 
