@@ -3,7 +3,11 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from buh_news.db import FileStore
-from buh_news.pipeline import DraftValidationError, ResearchPipeline, _official_source
+from buh_news.ai import RANKING_SCHEMA, STYLE
+from buh_news.pipeline import (
+    DraftValidationError, ResearchPipeline, _concise_post, _official_source,
+    _ranking_prompt, _ranking_recommendation, _ranking_score, _writing_prompt,
+)
 from buh_news.telegram import OwnerBot
 
 
@@ -24,6 +28,38 @@ class FakeTelegram:
 
     def message_handler(self, **_):
         return self.messages.append
+
+
+def test_editorial_ranking_score_and_thresholds():
+    item = dict.fromkeys(('personal_relevance', 'practical_impact', 'surprise', 'shareability', 'service_relevance'), 2)
+    item.update(recommendation='select', needs_primary_verification=False)
+    assert _ranking_score(item) == 10
+    assert _ranking_recommendation(item) == 'select'
+    item['shareability'] = 0
+    assert _ranking_score(item) == 8
+    assert _ranking_recommendation(item) == 'hold'
+    item['surprise'] = 1
+    assert _ranking_recommendation(item) == 'reject'
+    item['surprise'] = 2
+    item['shareability'] = 2
+    item['needs_primary_verification'] = True
+    assert _ranking_recommendation(item) == 'hold'
+    item['needs_primary_verification'] = False
+    item['source_id'] = 'podnikajte'
+    assert _ranking_recommendation(item) == 'hold'
+    fields = RANKING_SCHEMA['properties']['rankings']['items']['properties']
+    assert all(fields[key]['maximum'] == 2 for key in ('personal_relevance', 'practical_impact', 'surprise', 'shareability', 'service_relevance'))
+
+
+def test_editorial_prompts_do_not_force_generic_footer():
+    article = {'source_id': 'nbs', 'title': 'Example'}
+    prompt = _writing_prompt(article, 'https://nbs.sk/example', 'Source article')
+    assert 'effective and transitional dates' in prompt
+    assert 'Do not append a fixed generic footer' in STYLE
+    assert 'Питання щодо вашої ситуації' not in prompt
+    assert _concise_post('ї' * 900)
+    assert not _concise_post('ї' * 901)
+    assert 'RECENT_TOPICS=' in _ranking_prompt([], [{'topic_key': 'old', 'summary': 'Earlier topic'}])
 
 
 def test_official_source_skips_extra_ai_review():
@@ -74,6 +110,17 @@ def _owner_bot(tmp_path):
     bot.s = SimpleNamespace(timezone=ZoneInfo('Europe/Bratislava'), owner_user_id=123, owner_chat_id=123, max_revisions=2, user_agent='test')
     bot.bot = FakeTelegram()
     return bot
+
+
+def test_owner_options_exclude_unverified_and_weak_topics(tmp_path):
+    bot = _owner_bot(tmp_path)
+    run = {'ranked_candidates': [
+        {'article_id': 1, 'score': 10, 'recommendation': 'select'},
+        {'article_id': 2, 'score': 10, 'recommendation': 'hold', 'needs_primary_verification': True},
+        {'article_id': 3, 'score': 7, 'recommendation': 'select'},
+        {'article_id': 4, 'score': 8, 'recommendation': 'hold', 'needs_primary_verification': False},
+    ]}
+    assert [x['article_id'] for x in bot._alternatives(run, {'article_id': 1})] == [4]
 
 
 def test_failed_choice_is_removed_and_next_three_offered(tmp_path, monkeypatch):

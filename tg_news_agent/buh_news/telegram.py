@@ -12,7 +12,9 @@ class OwnerBot:
     def __init__(self,store,settings): self.store=store; self.s=settings; self.bot=TeleBot(settings.telegram_token); self.publisher=Publisher(store,settings,self.bot); self._register()
     def _owner(self,user_id,chat_id): return user_id==self.s.owner_user_id and chat_id==self.s.owner_chat_id
     def _alternatives(self,run,draft):
-        return [x for x in run.get('ranked_candidates',[]) if x.get('article_id')!=draft['article_id'] and x.get('recommendation')!='reject'][:3]
+        return [x for x in run.get('ranked_candidates',[]) if x.get('article_id')!=draft['article_id']
+                and x.get('recommendation')!='reject' and not x.get('needs_primary_verification')
+                and x.get('score',8)>=8][:3]
     def _choice_text(self,alternatives):
         return '\n\n'.join(
             f"{position}. <b>{escape(item.get('title_uk') or item['summary'])}</b>"+
