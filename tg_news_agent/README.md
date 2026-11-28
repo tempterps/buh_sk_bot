@@ -35,6 +35,14 @@ The one-time installer creates the `buhnews` service user, Python environment, p
 
 `buh-news-agent.service` is the always-on Telegram listener. It receives only owner approval/change callbacks and, after a change selection, creates a new checked draft. `buh-news-research.service` is a one-shot complete research workflow: discovery, ranking, article writing, proofreading, factual review, and Telegram preview delivery. It automatically requires the listener and is normally started by the daily timer; manually starting this one service runs the same end-to-end workflow. `buh-news-maintenance.service` expires old approvals hourly. The OpenAI ranking, writing, proofreading, and review stages are sequential calls inside the research worker, not additional Linux services.
 
+To run the full workflow again **even after today's draft limit has been reached**, execute this from the project directory on Ubuntu:
+
+```bash
+runuser -u buhnews -- .venv/bin/python -m buh_news run --manual
+```
+
+`--manual` bypasses only `MAX_NEW_DRAFTS_PER_DAY`; it does not bypass source eligibility, factual/editorial checks, the AI budget, or owner approval. It cannot guarantee a new draft if there is no suitable unprocessed news. `systemctl start buh-news-research.service` and the 18:00 timer continue to use the normal daily limit; systemctl does not forward `--manual` to the Python command.
+
 Official sources in the allowlist (MF SR, Finančná správa, Sociálna poisťovňa, NBS) skip the extra AI factual-review call only when the fetched final URL is HTTPS on that source's registered domain. Source evidence, proofreading, Ukrainian-language and length checks still apply. If a replacement topic fails editorial validation, it is excluded from that run's choices and the owner immediately gets the next three available topics. The owner can press **Виправити**, send one text instruction, and receive a fully revised post for review; the instruction does not directly replace the post. Corrections are limited by `MAX_AI_REVISIONS_PER_DRAFT`.
 
 ## Validate sources and test privately

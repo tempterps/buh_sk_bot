@@ -8,7 +8,8 @@ from .discovery import Fetcher
 from .feedback import FeedbackExampleWriter
 
 def main():
-    parser=argparse.ArgumentParser(description='BUH.SK news agent'); parser.add_argument('command',choices=['migrate','seed-sources','source-test','run','redraft','bot','expire','feedback-sync']); parser.add_argument('--source'); parser.add_argument('--draft'); args=parser.parse_args()
+    parser=argparse.ArgumentParser(description='BUH.SK news agent'); parser.add_argument('command',choices=['migrate','seed-sources','source-test','run','redraft','bot','expire','feedback-sync']); parser.add_argument('--source'); parser.add_argument('--draft'); parser.add_argument('--manual',action='store_true',help='for run: allow another draft today (other safety checks still apply)'); args=parser.parse_args()
+    if args.manual and args.command!='run': parser.error('--manual is only valid with run')
     s=settings(require_runtime=args.command in {'run','bot','expire'}); store=FileStore(s.data_dir); store.init()
     if args.command=='migrate': print(f'file store initialised: {store.root.resolve()}'); return
     seed_sources(store)
@@ -29,7 +30,7 @@ def main():
         print(f'saved {FeedbackExampleWriter(store).run()} approved examples')
         return
     bot=OwnerBot(store,s)
-    if args.command=='run': print(ResearchPipeline(store,s,bot).run())
+    if args.command=='run': print(ResearchPipeline(store,s,bot).run(manual=args.manual))
     elif args.command=='redraft':
         if not args.draft: parser.error('--draft is required with redraft')
         print(ResearchPipeline(store,s,bot).redraft(args.draft))

@@ -144,11 +144,11 @@ class ResearchPipeline:
             raise DraftValidationError('draft did not pass factual review')
         review['method']='ai_review'
         return review
-    def run(self):
+    def run(self, manual: bool = False):
         self.store.init(); seed_sources(self.store); run_id=str(uuid.uuid4()); now=datetime.now(self.s.timezone)
         with self.store.locked() as s:
             if any(r['status']=='running' for r in s['research_runs'].values()): return None
-            s['research_runs'][run_id]={'id':run_id,'started_at':now.isoformat(),'finished_at':None,'status':'running','source_successes':0,'source_failures':0,'candidate_count':0,'error':None}
+            s['research_runs'][run_id]={'id':run_id,'started_at':now.isoformat(),'finished_at':None,'status':'running','manual':manual,'source_successes':0,'source_failures':0,'candidate_count':0,'error':None}
             sources=[x.copy() for x in s['sources'].values() if x['enabled']]
         items=[]; ok=bad=0
         for source in sorted(sources,key=lambda x:(x['priority'],x['id'])):
@@ -226,7 +226,7 @@ class ResearchPipeline:
             s['research_runs'][run_id]['draft_candidate']={'status':draft['status'],'post':draft['post'],'evidence':draft['evidence'],'review':review}
         with self.store.locked() as s:
             daily=sum(1 for d in s['drafts'].values() if d['created_at'][:10]==now.date().isoformat())
-            if daily<self.s.max_daily_drafts:
+            if manual or daily<self.s.max_daily_drafts:
                 draft_id=str(uuid.uuid4()); h=sha256(draft['post'].encode()).hexdigest(); topic=ranking['topic_key']; s['topics'][topic]={'topic_key':topic,'last_selected_at':now.isoformat(),'last_published_at':None,'summary':ranking['audience_impact']}
                 s['drafts'][draft_id]={'id':draft_id,'article_id':article['id'],'topic_key':topic,'status':'pending','current_version':1,'approval_expires_at':(now+timedelta(hours=self.s.approval_hours)).isoformat(),'revision_count':0,'run_id':run_id,'created_at':now.isoformat(),'updated_at':now.isoformat()}
                 s['versions'][draft_id]={'1':{'version':1,'article_id':article['id'],'content':draft['post'],'content_hash':h,'evidence':draft['evidence'],'review':review,'review_passed':True,'preview_message_id':None,'note_message_id':None,'created_at':now.isoformat()}}
