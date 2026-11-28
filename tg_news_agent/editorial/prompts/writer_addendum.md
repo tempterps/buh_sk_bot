@@ -1,0 +1,1 @@
+Merged correction examples illustrate the owner's preferred brevity, structure, and tone. Do not copy their factual claims into a new story. Current source evidence and safety rules override examples.

@@ -39,7 +39,7 @@ class OwnerBot:
             if alternatives:
                 ref=uuid4().hex[:18]
                 draft['status']='revision_requested'
-                s['approval_events'].append({'draft_id':draft_id,'version':draft['current_version'],'event_type':'article_selection_requested','actor_user_id':actor_user_id,'actor_chat_id':actor_chat_id,'callback_ref':ref,'created_at':datetime.now(self.s.timezone).isoformat(),'details':{'article_ids':[x['article_id'] for x in alternatives]}})
+                s['approval_events'].append({'draft_id':draft_id,'version':draft['current_version'],'event_type':'article_selection_requested','actor_user_id':actor_user_id,'actor_chat_id':actor_chat_id,'callback_ref':ref,'created_at':datetime.now(self.s.timezone).isoformat(),'details':{'from_article_id':draft['article_id'],'article_ids':[x['article_id'] for x in alternatives]}})
             else:
                 draft['status']='pending'
         if not alternatives:
@@ -65,6 +65,9 @@ class OwnerBot:
         try:
             from .pipeline import ResearchPipeline
             ResearchPipeline(self.store,self.s,self).redraft(draft_id,article_id)
+            with self.store.locked() as s:
+                saved=next(x for x in reversed(s['approval_events']) if x.get('event_type')=='article_selection_requested' and x.get('callback_ref')==ref)
+                saved['details']['result_version']=s['drafts'][draft_id]['current_version']
         except Exception as exc:
             # A failed replacement must never strand the owner in an
             # un-actionable state. Restore the last reviewed version.
@@ -173,8 +176,13 @@ class OwnerBot:
             try:
                 from .pipeline import ResearchPipeline
                 ResearchPipeline(self.store,self.s,self).redraft(draft_id,instructions=value)
+                with self.store.locked() as s:
+                    saved=next(x for x in reversed(s['approval_events']) if x.get('event_type')=='correction_requested' and x.get('created_at')==request['created_at'] and x.get('draft_id')==draft_id)
+                    saved['details']['result_version']=s['drafts'][draft_id]['current_version']
             except Exception as exc:
                 with self.store.locked() as s:
+                    saved=next(x for x in reversed(s['approval_events']) if x.get('event_type')=='correction_requested' and x.get('created_at')==request['created_at'] and x.get('draft_id')==draft_id)
+                    saved['details']['failed_at']=datetime.now(self.s.timezone).isoformat()
                     draft=s['drafts'].get(draft_id)
                     if draft and draft['status']=='revision_requested':
                         draft['status']='pending'; draft['updated_at']=datetime.now(self.s.timezone).isoformat()

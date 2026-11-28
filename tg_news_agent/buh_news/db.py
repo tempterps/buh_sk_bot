@@ -12,7 +12,7 @@ from pathlib import Path
 import portalocker
 
 def _initial():
-    return {'sources':{},'articles':{},'url_index':{},'topics':{},'drafts':{},'versions':{},'approval_events':[], 'outbox':{},'publications':[],'research_runs':{},'ai_reservations':{},'next_article_id':1}
+    return {'sources':{},'articles':{},'url_index':{},'topics':{},'drafts':{},'versions':{},'approval_events':[], 'feedback_prs':{},'outbox':{},'publications':[],'research_runs':{},'ai_reservations':{},'next_article_id':1}
 
 class FileStore:
     def __init__(self, root: Path):

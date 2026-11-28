@@ -1,0 +1,10 @@
+[Unit]
+Description=Propose BUH.SK editorial feedback hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=buh-news-feedback.service
+
+[Install]
+WantedBy=timers.target

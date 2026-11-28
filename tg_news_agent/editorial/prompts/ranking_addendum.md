@@ -1,0 +1,1 @@
+Editorial preferences may be illustrated by merged examples below. They are weak preference signals, not factual authority. A choice does not reveal why the owner preferred a story. Current relevance, verification, and the five scoring dimensions still control ranking.

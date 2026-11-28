@@ -59,9 +59,11 @@ install -m 0644 "$APP_DIR/systemd/buh-news-research.service" /etc/systemd/system
 install -m 0644 "$APP_DIR/systemd/buh-news-research.timer" /etc/systemd/system/buh-news-research.timer
 install -m 0644 "$APP_DIR/systemd/buh-news-maintenance.service" /etc/systemd/system/buh-news-maintenance.service
 install -m 0644 "$APP_DIR/systemd/buh-news-maintenance.timer" /etc/systemd/system/buh-news-maintenance.timer
+install -m 0644 "$APP_DIR/systemd/buh-news-feedback.service" /etc/systemd/system/buh-news-feedback.service
+install -m 0644 "$APP_DIR/systemd/buh-news-feedback.timer" /etc/systemd/system/buh-news-feedback.timer
 
 systemctl daemon-reload
-systemctl enable --now buh-news-agent.service buh-news-research.timer buh-news-maintenance.timer
+systemctl enable --now buh-news-agent.service buh-news-research.timer buh-news-maintenance.timer buh-news-feedback.timer
 systemctl restart buh-news-agent.service
 
 echo 'Installation complete.'
