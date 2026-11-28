@@ -1,0 +1,12 @@
+[Unit]
+Description=Run BUH.SK research at 08:00 Bratislava time
+
+[Timer]
+OnCalendar=*-*-* 08:00:00
+Timezone=Europe/Bratislava
+Persistent=true
+Unit=buh-news-research.service
+
+[Install]
+WantedBy=timers.target
+

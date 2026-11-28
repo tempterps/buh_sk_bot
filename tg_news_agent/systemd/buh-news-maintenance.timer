@@ -1,0 +1,11 @@
+[Unit]
+Description=Expire BUH.SK news approvals hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=buh-news-maintenance.service
+
+[Install]
+WantedBy=timers.target
+

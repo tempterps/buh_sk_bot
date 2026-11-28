@@ -1,0 +1,10 @@
+[Unit]
+Description=Expire BUH.SK news approvals
+
+[Service]
+Type=oneshot
+User=buhnews
+WorkingDirectory=/opt/buh-news-agent
+EnvironmentFile=/opt/buh-news-agent/.env
+ExecStart=/opt/buh-news-agent/.venv/bin/python -m buh_news expire
+

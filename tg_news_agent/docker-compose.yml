@@ -1,0 +1,9 @@
+services:
+  news-agent:
+    build: .
+    env_file: .env
+    command: python -m buh_news bot
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+

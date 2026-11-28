@@ -1,0 +1,17 @@
+[Unit]
+Description=BUH.SK Telegram news approval bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=buhnews
+WorkingDirectory=/opt/buh-news-agent
+EnvironmentFile=/opt/buh-news-agent/.env
+ExecStart=/opt/buh-news-agent/.venv/bin/python -m buh_news bot
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
