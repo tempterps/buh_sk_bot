@@ -18,7 +18,7 @@ if [[ "$PROJECT_DIR" != "$APP_DIR" ]]; then
   exit 1
 fi
 if [[ ! -f "$APP_DIR/.env" ]]; then
-  echo "Missing $APP_DIR/.env. Copy .env.example to .env and fill its values first." >&2
+  echo "Missing $APP_DIR/.env. Create the private environment file before installing." >&2
   exit 1
 fi
 
@@ -59,11 +59,11 @@ install -m 0644 "$APP_DIR/systemd/buh-news-research.service" /etc/systemd/system
 install -m 0644 "$APP_DIR/systemd/buh-news-research.timer" /etc/systemd/system/buh-news-research.timer
 install -m 0644 "$APP_DIR/systemd/buh-news-maintenance.service" /etc/systemd/system/buh-news-maintenance.service
 install -m 0644 "$APP_DIR/systemd/buh-news-maintenance.timer" /etc/systemd/system/buh-news-maintenance.timer
-install -m 0644 "$APP_DIR/systemd/buh-news-feedback.service" /etc/systemd/system/buh-news-feedback.service
-install -m 0644 "$APP_DIR/systemd/buh-news-feedback.timer" /etc/systemd/system/buh-news-feedback.timer
+# Disable the obsolete PR timer if an earlier deployment installed it.
+systemctl disable --now buh-news-feedback.timer 2>/dev/null || true
 
 systemctl daemon-reload
-systemctl enable --now buh-news-agent.service buh-news-research.timer buh-news-maintenance.timer buh-news-feedback.timer
+systemctl enable --now buh-news-agent.service buh-news-research.timer buh-news-maintenance.timer
 systemctl restart buh-news-agent.service
 
 echo 'Installation complete.'

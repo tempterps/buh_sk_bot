@@ -1,4 +1,4 @@
-"""Editable editorial guidance and merged, bounded learning examples."""
+"""Editable editorial guidance and bounded, locally approved examples."""
 from __future__ import annotations
 
 import json
@@ -12,12 +12,10 @@ def guidance(name: str) -> str:
     return (EDITORIAL_DIR / 'prompts' / f'{name}.md').read_text(encoding='utf-8').strip()
 
 
-def examples(kind: str, limit: int = 2, max_chars: int = 5000) -> str:
-    """Only files present in the deployed (merged) checkout influence prompts."""
-    root = EDITORIAL_DIR / 'examples'
+def examples(kind: str, store=None, limit: int = 2, max_chars: int = 5000) -> str:
+    """Read only locally persisted owner-approved examples, never source text."""
     rows = []
-    for path in root.glob('*.json'):
-        record = json.loads(path.read_text(encoding='utf-8'))
+    for record in store.read_examples() if store is not None else []:
         if kind in record:
             rows.append((record.get('approved_at', ''), record[kind]))
     rows.sort(key=lambda item: item[0], reverse=True)

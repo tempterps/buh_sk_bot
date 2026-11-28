@@ -2,11 +2,13 @@ from __future__ import annotations
 from datetime import datetime
 from hashlib import sha256
 from html import escape
+import logging
 from uuid import uuid4
 from telebot import TeleBot, types
 from telebot.apihelper import ApiTelegramException
 from .publication import Publisher
 from .policy import approval_valid
+from .feedback import FeedbackExampleWriter
 
 class OwnerBot:
     def __init__(self,store,settings): self.store=store; self.s=settings; self.bot=TeleBot(settings.telegram_token); self.publisher=Publisher(store,settings,self.bot); self._register()
@@ -145,7 +147,10 @@ class OwnerBot:
                         correction_limit=False
                         d['status']='revision_requested'
                         s['approval_events'].append({'draft_id':draft_id,'version':event['version'],'event_type':'correction_requested','actor_user_id':call.from_user.id,'actor_chat_id':call.message.chat.id,'created_at':datetime.now(self.s.timezone).isoformat(),'details':{}})
-            if action=='approve': self.publisher.enqueue(*enqueue)
+            if action=='approve':
+                try: FeedbackExampleWriter(self.store).run()
+                except Exception: logging.exception('Could not save approved editorial example; hourly maintenance will retry')
+                self.publisher.enqueue(*enqueue)
             if action=='approve':
                 outcome=self.publisher.process_one(); self.bot.send_message(self.s.owner_chat_id,'Схвалено. У preview-режимі публікацію не надіслано.' if outcome=='preview_acknowledged' else 'Схвалено.')
             elif action=='reject':self.bot.send_message(self.s.owner_chat_id,'Чернетку відхилено.')

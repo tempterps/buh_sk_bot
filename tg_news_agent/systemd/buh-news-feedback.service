@@ -1,9 +1,0 @@
-[Unit]
-Description=Propose BUH.SK approved editorial feedback as GitHub PRs
-
-[Service]
-Type=oneshot
-User=buhnews
-WorkingDirectory=/opt/buh_sk_news_bot/tg_news_agent
-EnvironmentFile=/opt/buh_sk_news_bot/tg_news_agent/.env
-ExecStart=/opt/buh_sk_news_bot/tg_news_agent/.venv/bin/python -m buh_news feedback-pr

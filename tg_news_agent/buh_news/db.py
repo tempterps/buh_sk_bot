@@ -12,11 +12,11 @@ from pathlib import Path
 import portalocker
 
 def _initial():
-    return {'sources':{},'articles':{},'url_index':{},'topics':{},'drafts':{},'versions':{},'approval_events':[], 'feedback_prs':{},'outbox':{},'publications':[],'research_runs':{},'ai_reservations':{},'next_article_id':1}
+    return {'sources':{},'articles':{},'url_index':{},'topics':{},'drafts':{},'versions':{},'approval_events':[], 'outbox':{},'publications':[],'research_runs':{},'ai_reservations':{},'next_article_id':1}
 
 class FileStore:
     def __init__(self, root: Path):
-        self.root=root; self.state_path=root/'state.json'; self.lock_path=root/'state.lock'; self.usage_path=root/'ai_usage.jsonl'; self.agent_trace_path=root/'agent_trace.jsonl'
+        self.root=root; self.state_path=root/'state.json'; self.lock_path=root/'state.lock'; self.usage_path=root/'ai_usage.jsonl'; self.agent_trace_path=root/'agent_trace.jsonl'; self.examples_path=root/'editorial_examples.jsonl'
     def init(self):
         self.root.mkdir(parents=True,exist_ok=True)
         with self.locked() as state: state.setdefault('sources',{})
@@ -46,6 +46,23 @@ class FileStore:
         self._append_jsonl(self.usage_path,record)
     def append_agent_trace(self, record: dict):
         self._append_jsonl(self.agent_trace_path,record)
+    def append_example_once(self, record: dict) -> bool:
+        """Keep approved examples in a private, idempotent local ledger."""
+        self.root.mkdir(parents=True,exist_ok=True)
+        with portalocker.Lock(str(self.examples_path),'a+',timeout=15,encoding='utf-8') as f:
+            f.seek(0)
+            if any(json.loads(line)['draft_id']==record['draft_id'] for line in f.readlines() if line.strip()):
+                return False
+            f.seek(0,os.SEEK_END)
+            f.write(json.dumps(record,ensure_ascii=False,sort_keys=True)+'\n')
+            f.flush(); os.fsync(f.fileno())
+        try: os.chmod(self.examples_path,0o600)
+        except OSError: pass
+        return True
+    def read_examples(self) -> list[dict]:
+        if not self.examples_path.exists(): return []
+        with portalocker.Lock(str(self.examples_path),'r',timeout=15,encoding='utf-8') as f:
+            return [json.loads(line) for line in f.readlines() if line.strip()]
     def run_cost(self, run_id: str) -> Decimal:
         with self.locked() as s:
             return sum((Decimal(str(x.get('actual_usd') if x.get('actual_usd') is not None else x['reserved_usd'])) for x in s['ai_reservations'].values() if x['run_id']==run_id),Decimal('0'))

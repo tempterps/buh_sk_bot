@@ -5,10 +5,10 @@ from .db import FileStore
 from .pipeline import ResearchPipeline,seed_sources
 from .telegram import OwnerBot
 from .discovery import Fetcher
-from .feedback import FeedbackPRPublisher
+from .feedback import FeedbackExampleWriter
 
 def main():
-    parser=argparse.ArgumentParser(description='BUH.SK news agent'); parser.add_argument('command',choices=['migrate','seed-sources','source-test','run','redraft','bot','expire','feedback-pr']); parser.add_argument('--source'); parser.add_argument('--draft'); args=parser.parse_args()
+    parser=argparse.ArgumentParser(description='BUH.SK news agent'); parser.add_argument('command',choices=['migrate','seed-sources','source-test','run','redraft','bot','expire','feedback-sync']); parser.add_argument('--source'); parser.add_argument('--draft'); args=parser.parse_args()
     s=settings(require_runtime=args.command in {'run','bot','expire'}); store=FileStore(s.data_dir); store.init()
     if args.command=='migrate': print(f'file store initialised: {store.root.resolve()}'); return
     seed_sources(store)
@@ -25,14 +25,14 @@ def main():
                 print(json.dumps({'source':source['id'],'http':response.status_code,'items':checked,'count':len(items)},ensure_ascii=False))
             except Exception as exc: failed=True; print(json.dumps({'source':source['id'],'unavailable':str(exc)},ensure_ascii=False))
         raise SystemExit(1 if failed else 0)
-    if args.command=='feedback-pr':
-        print(json.dumps(FeedbackPRPublisher(store,s).run(),ensure_ascii=False))
+    if args.command=='feedback-sync':
+        print(f'saved {FeedbackExampleWriter(store).run()} approved examples')
         return
     bot=OwnerBot(store,s)
     if args.command=='run': print(ResearchPipeline(store,s,bot).run())
     elif args.command=='redraft':
         if not args.draft: parser.error('--draft is required with redraft')
         print(ResearchPipeline(store,s,bot).redraft(args.draft))
-    elif args.command=='expire': bot.expire(); print('expired pending approvals')
+    elif args.command=='expire': bot.expire(); print(f'expired pending approvals; saved {FeedbackExampleWriter(store).run()} approved examples')
     else: bot.run()
 if __name__=='__main__':main()

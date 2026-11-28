@@ -44,11 +44,6 @@ class Settings:
     ranking_output_price: Decimal | None
     writing_input_price: Decimal | None
     writing_output_price: Decimal | None
-    feedback_pr_enabled: bool
-    feedback_github_token: str
-    feedback_github_repo: str
-    feedback_pr_base_branch: str
-    feedback_allow_public_repo: bool
 
     @property
     def ai_enabled(self) -> bool:
@@ -89,10 +84,5 @@ def settings(require_runtime: bool = True) -> Settings:
         price_verified_on=os.getenv("PRICE_TABLE_VERIFIED_ON") or None,
         ranking_input_price=_price("RANKING_INPUT_USD_PER_1M"), ranking_output_price=_price("RANKING_OUTPUT_USD_PER_1M"),
         writing_input_price=_price("WRITING_INPUT_USD_PER_1M"), writing_output_price=_price("WRITING_OUTPUT_USD_PER_1M"),
-        feedback_pr_enabled=_bool("FEEDBACK_PR_ENABLED"),
-        feedback_github_token=os.getenv("FEEDBACK_GITHUB_TOKEN", ""),
-        feedback_github_repo=os.getenv("FEEDBACK_GITHUB_REPO", ""),
-        feedback_pr_base_branch=os.getenv("FEEDBACK_PR_BASE_BRANCH", "Stage1"),
-        feedback_allow_public_repo=_bool("FEEDBACK_ALLOW_PUBLIC_REPO"),
     )
 

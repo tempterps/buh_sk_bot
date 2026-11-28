@@ -4,23 +4,13 @@ This agent is independent of the customer-service bot and persists its low-volum
 
 `data/state.json` contains sources, articles, drafts, approvals and outbox state. Writes are inter-process locked and atomic. `data/ai_usage.jsonl` is an append-only ledger containing each AI reservation, returned token use, reconciled cost, and held/failed call. `data/agent_trace.jsonl` records the full prompt and response for each ranking, writing, proofreading, and factual-review handoff. It can contain source/article content, so keep `data/` out of Git and back it up on the Ubuntu host. The agent sets its JSONL log files to owner-read/write only on Linux.
 
-### Editorial learning through PRs
+### Editorial learning from owner feedback
 
-Owner actions (including rejected drafts, alternative selections, correction instructions, and final approvals) remain in the private, ignored `data/state.json`. Only an alternative eventually approved by the owner, or a correction followed by an approved revised post, becomes a proposed example. The proposal contains the before/after Telegram text and correction instructions and/or the previous versus chosen ranked candidate. It does **not** include the source article's full text. A choice is recorded as a preference signal, not an explanation of *why* the owner chose it.
+Owner actions (including rejected drafts, alternative selections, correction instructions, and final approvals) remain in the private, ignored `data/state.json`. Only an alternative eventually approved by the owner, or a correction followed by an approved revised post, becomes an active example. `data/editorial_examples.jsonl` stores the before/after Telegram text and correction instructions and/or the previous versus chosen ranked candidate. It does **not** include the source article's full text. A choice is a preference signal, not an explanation of *why* the owner chose it.
 
-`editorial/prompts/*.md` contains editable editorial addenda. Merged `editorial/examples/*.json` files supply at most two short examples to the relevant ranking/writing prompt. The code never reads unmerged PRs, so feedback cannot silently modify the live agent. Review examples for factual quality and privacy before merging; deploy/pull the merged branch on Ubuntu before they affect future runs. Core evidence and publication safety checks remain in Python.
+`editorial/prompts/*.md` contains editable editorial addenda. The ranking, writing, and proofreading stages read recent examples directly from `data/editorial_examples.jsonl` on the same server. At most two short examples and 5,000 characters are supplied per main prompt, keeping token use bounded. The next run can use newly approved feedback without a Git push, PR, or redeploy. Core evidence and publication safety checks remain in Python.
 
-To enable automatic proposals, put these values in the server's private `.env` and rerun the installer to add the hourly feedback timer:
-
-```dotenv
-FEEDBACK_PR_ENABLED=true
-FEEDBACK_GITHUB_TOKEN=<fine-grained GitHub token>
-FEEDBACK_GITHUB_REPO=tempterps/buh_sk_bot
-FEEDBACK_PR_BASE_BRANCH=Stage1
-FEEDBACK_ALLOW_PUBLIC_REPO=false
-```
-
-Give the token repository **Contents: write** and **Pull requests: write** access. A public repository is blocked by default because a PR would expose owner corrections; do not set `FEEDBACK_ALLOW_PUBLIC_REPO=true` unless you deliberately accept that exposure. A missing token or GitHub failure leaves the local approval history intact for retry. The separate `buh-news-feedback.timer` checks hourly, and you can trigger a proposal run with `systemctl start --no-block buh-news-feedback.service`. See its result with `journalctl -u buh-news-feedback.service -n 50 --no-pager`. This workflow uses the GitHub API, not `git push` from the production checkout, so it cannot disturb the running branch or its local data.
+An approved example is saved immediately by the Telegram listener; hourly maintenance retries if that write failed or the bot was interrupted. To backfill past approvals manually, run `.venv/bin/python -m buh_news feedback-sync` as the `buhnews` service user. `data/` is ignored by Git: do not commit the example file, which can contain private owner instructions. Back it up with `data/state.json` on the Ubuntu host. The obsolete GitHub feedback timer is disabled by the updated installer.
 
 ## Essential Telegram constraint
 
@@ -39,7 +29,7 @@ cd /opt/buh_sk_news_bot/tg_news_agent
 sudo bash deploy/ubuntu/setup_ubuntu.sh
 ```
 
-The one-time installer creates the `buhnews` service user, Python environment, persistent approval listener, daily 18:00 Europe/Bratislava research timer, hourly expiry and feedback-PR timers, and systemd units. Put the private Healthchecks URL in `HEALTHCHECKS_PING_URL` in `.env`; it is pinged only after a successful daily worker run. Keep `NEWS_MODE=preview` and `PUBLISHING_ENABLED=false` until production is explicitly ready.
+The one-time installer creates the `buhnews` service user, Python environment, persistent approval listener, daily 18:00 Europe/Bratislava research timer, hourly expiry timer, and systemd units. Put the private Healthchecks URL in `HEALTHCHECKS_PING_URL` in `.env`; it is pinged only after a successful daily worker run. Keep `NEWS_MODE=preview` and `PUBLISHING_ENABLED=false` until production is explicitly ready.
 
 ### Runtime responsibilities
 
