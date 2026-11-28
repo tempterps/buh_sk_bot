@@ -81,13 +81,15 @@ def test_editorial_prompts_do_not_force_generic_footer():
                                                               'https://www.kros.sk/blog/news', 'Source article')
 
 
-def test_official_source_skips_extra_ai_review():
-    class NoReviewAI:
-        def call(self, *_args, **_kwargs):
-            raise AssertionError('AI factual review must not run for official source')
+def test_trusted_source_skips_trust_check_but_gets_editorial_review():
+    stages = []
+    class ReviewAI:
+        def call(self, _run_id, stage, *_args, **_kwargs):
+            stages.append(stage)
+            return {'passed': True, 'unsupported_claims': [], 'notes': []}
 
     pipeline = object.__new__(ResearchPipeline)
-    pipeline.ai = NoReviewAI()
+    pipeline.ai = ReviewAI()
     pipeline.s = SimpleNamespace(writing_model='test')
     article = {'source_id': 'nbs'}
     url = 'https://nbs.sk/aktuality/priklad'
@@ -101,15 +103,18 @@ def test_official_source_skips_extra_ai_review():
     assert _official_source({'source_id': 'fs_news'}, 'https://www.financnasprava.sk/sk/news')
     assert _official_source({'source_id': 'fs_press'}, 'https://www.financnasprava.sk/sk/press')
     assert not _official_source({'source_id': 'kros_legislation'}, 'https://www.kros.sk/blog/news')
-    assert pipeline._review('run', article, url, draft)['method'] == 'official_source'
+    result = pipeline._review('run', article, url, draft, 'Fetched official article')
+    assert result['method'] == 'editorial_review'
+    assert result['trust_review'] == 'skipped_registered_source'
+    assert stages == ['editorial_review']
 
 
-def test_other_source_still_gets_factual_review():
+def test_other_source_gets_separate_trust_and_editorial_review():
     calls = []
 
     class ReviewAI:
-        def call(self, _run_id, _stage, _model, prompt, *_args, **_kwargs):
-            calls.append(prompt)
+        def call(self, _run_id, stage, _model, prompt, *_args, **_kwargs):
+            calls.append((stage, prompt))
             return {'passed': True, 'unsupported_claims': [], 'notes': []}
 
     pipeline = object.__new__(ResearchPipeline)
@@ -121,13 +126,16 @@ def test_other_source_still_gets_factual_review():
         'post': '<b>Нові правила для підприємців</b>\nОфіційно оприлюднено зміни для бізнесу у Словаччині. Деталі важливі для роботодавців.\nПитання щодо вашої ситуації — пишіть @buh_sk\nbuh.sk',
         'evidence': {'claims': [{'claim': 'example'}], 'source_urls': [url]},
     }
-    assert pipeline._review('run', {'source_id': 'podnikajte'}, url, draft)['method'] == 'ai_review'
+    result = pipeline._review('run', {'source_id': 'podnikajte'}, url, draft, 'Fetched secondary article')
+    assert result['method'] == 'editorial_review'
+    assert [stage for stage, _ in calls] == ['trust_review', 'editorial_review']
     kros_url = 'https://www.kros.sk/blog/legislativa'
     kros_draft = {**draft, 'evidence': {**draft['evidence'], 'source_urls': [kros_url]}}
-    assert pipeline._review('run', {'source_id': 'kros_legislation'}, kros_url, kros_draft,
-                            'The fetched KROS article')['method'] == 'ai_review'
-    assert len(calls) == 2
-    assert 'SOURCE_ARTICLE=The fetched KROS article' in calls[-1]
+    result = pipeline._review('run', {'source_id': 'kros_legislation'}, kros_url, kros_draft,
+                              'The fetched KROS article')
+    assert result['trust_review'] == 'skipped_registered_source'
+    assert [stage for stage, _ in calls] == ['trust_review', 'editorial_review', 'editorial_review']
+    assert 'SOURCE_ARTICLE=The fetched KROS article' in calls[-1][1]
     try:
         pipeline._review('run', {'source_id': 'kros_legislation'},
                          'https://kros.sk.evil.example/news', kros_draft)
@@ -135,7 +143,25 @@ def test_other_source_still_gets_factual_review():
         assert 'registered HTTPS domain' in str(exc)
     else:
         raise AssertionError('redirect outside the trusted domain must be rejected')
-    assert len(calls) == 2
+    assert len(calls) == 3
+
+
+def test_failed_source_trust_prevents_editorial_call():
+    stages = []
+    pipeline = object.__new__(ResearchPipeline)
+    pipeline.s = SimpleNamespace(writing_model='test')
+    class RejectAI:
+        def call(self, _run_id, stage, *_args):
+            stages.append(stage)
+            return {'passed': False, 'unsupported_claims': ['No primary support'], 'notes': []}
+    pipeline.ai = RejectAI()
+    url = 'https://podnikajte.sk/clanok'
+    draft = {'status': 'ready', 'post': '<b>Новини для підприємців</b> ' + 'Важлива новина для підприємців. ' * 7,
+             'evidence': {'claims': [{'claim': 'example'}], 'source_urls': [url]}}
+    import pytest
+    with pytest.raises(DraftValidationError, match='trust review'):
+        pipeline._review('run', {'source_id': 'podnikajte'}, url, draft, 'Fetched article')
+    assert stages == ['trust_review']
 
 
 def _owner_bot(tmp_path):
@@ -147,15 +173,15 @@ def _owner_bot(tmp_path):
     return bot
 
 
-def test_owner_options_exclude_unverified_and_weak_topics(tmp_path):
+def test_owner_options_include_low_ranked_topics_but_exclude_editorial_failures(tmp_path):
     bot = _owner_bot(tmp_path)
     run = {'ranked_candidates': [
         {'article_id': 1, 'score': 10, 'recommendation': 'select'},
         {'article_id': 2, 'score': 10, 'recommendation': 'hold', 'needs_primary_verification': True},
         {'article_id': 3, 'score': 7, 'recommendation': 'select'},
-        {'article_id': 4, 'score': 8, 'recommendation': 'hold', 'needs_primary_verification': False},
+        {'article_id': 4, 'score': 8, 'recommendation': 'hold', 'needs_primary_verification': False, 'editorial_failed': True},
     ]}
-    assert [x['article_id'] for x in bot._alternatives(run, {'article_id': 1})] == [4]
+    assert [x['article_id'] for x in bot._alternatives(run, {'article_id': 1})] == [2, 3]
 
 
 def test_failed_choice_is_removed_and_next_three_offered(tmp_path, monkeypatch):
@@ -182,10 +208,89 @@ def test_failed_choice_is_removed_and_next_three_offered(tmp_path, monkeypatch):
     call = SimpleNamespace(from_user=SimpleNamespace(id=123), message=SimpleNamespace(chat=SimpleNamespace(id=123)))
     bot._pick_article(call, 'old', 1)
     with bot.store.locked() as state:
-        assert state['research_runs']['r']['ranked_candidates'][1]['recommendation'] == 'reject'
+        assert state['research_runs']['r']['ranked_candidates'][1]['editorial_failed'] is True
         assert state['drafts']['d']['status'] == 'revision_requested'
         assert state['approval_events'][-1]['details']['article_ids'] == [3, 4, 5]
     assert 'Тема 5' in bot.bot.sent[-1][1]
+
+
+def test_no_valuable_news_offers_top_three_then_owner_selects_one(tmp_path, monkeypatch):
+    bot = _owner_bot(tmp_path)
+    bot.s.approval_hours = 24
+    bot._register()
+    with bot.store.locked() as state:
+        state['research_runs']['r'] = {'status': 'owner_choice_pending', 'ranked_candidates': [
+            {'article_id': i, 'title_uk': f'Тема {i}', 'summary': f'Суть {i}',
+             'score': 8-i, 'recommendation': 'reject', 'needs_primary_verification': True}
+            for i in range(1, 5)
+        ]}
+    assert bot.send_fallback_offer('r')
+    with bot.store.locked() as state:
+        choice = state['research_runs']['r']['owner_choice']
+        assert choice['candidate_ids'] == [1, 2, 3]
+        offer_ref = choice['offer_ref']
+    assert 'Тема 3' in bot.bot.sent[-1][1]
+    assert 'Тема 4' not in bot.bot.sent[-1][1]
+    assert [button.callback_data for button in bot.bot.sent[-1][2]['reply_markup'].keyboard[0]] == [
+        f'n:offer:{offer_ref}', f'n:offerclose:{offer_ref}']
+
+    def call(data):
+        return SimpleNamespace(id='callback', data=data, from_user=SimpleNamespace(id=123),
+                               message=SimpleNamespace(chat=SimpleNamespace(id=123)))
+    bot.bot.callbacks[0](call(f'n:offer:{offer_ref}'))
+    with bot.store.locked() as state:
+        choice = state['research_runs']['r']['owner_choice']
+        assert choice['stage'] == 'selecting'
+        selection_ref = choice['selection_ref']
+    assert [button.callback_data for button in bot.bot.sent[-1][2]['reply_markup'].keyboard[0]] == [
+        f'n:offerpick:{selection_ref}:1', f'n:offerpick:{selection_ref}:2', f'n:offerpick:{selection_ref}:3']
+    selected = []
+    monkeypatch.setattr(ResearchPipeline, 'draft_selected', lambda _self, run_id, article_id: selected.append((run_id, article_id)))
+    bot.bot.callbacks[0](call(f'n:offerpick:{selection_ref}:2'))
+    assert selected == [('r', 2)]
+    with bot.store.locked() as state:
+        assert state['research_runs']['r']['owner_choice']['selected_article_id'] == 2
+        assert any(event['event_type'] == 'fallback_article_selected' for event in state['approval_events'])
+
+
+def test_failed_fallback_story_is_removed_and_next_ranked_story_offered(tmp_path, monkeypatch):
+    bot = _owner_bot(tmp_path)
+    bot.s.approval_hours = 24
+    now = datetime.now(bot.s.timezone)
+    with bot.store.locked() as state:
+        state['research_runs']['r'] = {'status': 'owner_choice_pending', 'ranked_candidates': [
+            {'article_id': i, 'title_uk': f'Тема {i}', 'summary': f'Суть {i}', 'score': 7-i}
+            for i in range(1, 5)
+        ], 'owner_choice': {'stage': 'selecting', 'selection_ref': 'pickref',
+                            'candidate_ids': [1, 2, 3],
+                            'expires_at': (now+timedelta(hours=1)).isoformat()}}
+    def fail(*_args, **_kwargs):
+        raise DraftValidationError('unsupported claim')
+    monkeypatch.setattr(ResearchPipeline, 'draft_selected', fail)
+    call = SimpleNamespace(from_user=SimpleNamespace(id=123), message=SimpleNamespace(chat=SimpleNamespace(id=123)))
+    bot._fallback_pick(call, 'pickref', 1)
+    with bot.store.locked() as state:
+        run = state['research_runs']['r']
+        assert run['ranked_candidates'][0]['editorial_failed'] is True
+        assert run['owner_choice']['candidate_ids'] == [2, 3, 4]
+        assert run['owner_choice']['stage'] == 'selecting'
+    assert 'Тема 4' in bot.bot.sent[-1][1]
+
+
+def test_fallback_close_does_not_create_draft(tmp_path):
+    bot = _owner_bot(tmp_path)
+    bot.s.approval_hours = 24
+    with bot.store.locked() as state:
+        state['research_runs']['r'] = {'ranked_candidates': [
+            {'article_id': 1, 'title_uk': 'Тема', 'summary': 'Суть', 'score': 2}]}
+    assert bot.send_fallback_offer('r')
+    with bot.store.locked() as state:
+        ref = state['research_runs']['r']['owner_choice']['offer_ref']
+    call = SimpleNamespace(from_user=SimpleNamespace(id=123), message=SimpleNamespace(chat=SimpleNamespace(id=123)))
+    bot._fallback_action(call, 'offerclose', ref)
+    with bot.store.locked() as state:
+        assert state['research_runs']['r']['owner_choice']['stage'] == 'closed'
+        assert state['drafts'] == {}
 
 
 def test_correct_button_requests_written_instructions(tmp_path, monkeypatch):

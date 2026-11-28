@@ -83,6 +83,79 @@ def test_manual_flag_reaches_pipeline(tmp_path, monkeypatch, capsys):
     assert capsys.readouterr().out.strip() == 'draft_created'
 
 
+def test_low_ranked_stories_are_offered_when_none_qualify(tmp_path, monkeypatch):
+    from buh_news.telegram import OwnerBot
+    store = FileStore(tmp_path)
+    tz = ZoneInfo('Europe/Bratislava')
+    with store.locked() as state:
+        state['sources']['kros_legislation'] = {'id': 'kros_legislation', 'enabled': True,
+                                                'priority': 1, 'method': 'rss'}
+    settings = SimpleNamespace(user_agent='test', timezone=tz, max_candidates=30,
+                               ranking_model='rank', approval_hours=24, owner_chat_id=123)
+    owner = object.__new__(OwnerBot)
+    owner.store = store
+    owner.s = settings
+    sent = []
+    owner.bot = SimpleNamespace(send_message=lambda _chat_id, text, **kwargs: sent.append((text, kwargs)))
+    pipeline = ResearchPipeline(store, settings, owner)
+    items = [Item('kros_legislation', f'Headline {i}', f'https://www.kros.sk/blog/news-{i}',
+                  datetime.now(tz), None, [], f'Summary {i}') for i in range(1, 5)]
+    monkeypatch.setattr('buh_news.pipeline.seed_sources', lambda _store: None)
+    monkeypatch.setattr(pipeline.fetcher, 'feed', lambda _source: (items, SimpleNamespace(headers={})))
+    def rank(_run_id, stage, *_args):
+        assert stage == 'ranking'
+        return {'rankings': [
+            {'candidate_id': i, 'topic_key': f'topic-{i}', 'owner_title': f'Тема {i}',
+             'audience_impact': f'Суть {i}', 'personal_relevance': 1, 'practical_impact': 1,
+             'surprise': 1, 'shareability': 1, 'service_relevance': 0,
+             'needs_primary_verification': True, 'recommendation': 'reject'}
+            for i in range(1, 5)]}
+    monkeypatch.setattr(pipeline.ai, 'call', rank)
+    assert pipeline.run(manual=True) == 'owner_choice_pending'
+    with store.locked() as state:
+        run = next(iter(state['research_runs'].values()))
+        assert run['owner_choice']['candidate_ids'] == [1, 2, 3]
+        assert state['drafts'] == {}
+    assert 'Тема 3' in sent[-1][0]
+    assert 'Тема 4' not in sent[-1][0]
+
+
+def test_owner_selected_low_ranked_topic_gets_full_editorial_review(tmp_path, monkeypatch):
+    store = FileStore(tmp_path)
+    tz = ZoneInfo('Europe/Bratislava')
+    url = 'https://www.kros.sk/blog/news'
+    with store.locked() as state:
+        state['articles']['1'] = {'id': 1, 'source_id': 'kros_legislation', 'canonical_url': url,
+                                  'title': 'Source article'}
+        state['research_runs']['r'] = {
+            'status': 'owner_choice_pending',
+            'ranked_candidates': [{'article_id': 1, 'topic_key': 'topic', 'summary': 'Суть',
+                                   'score': 2, 'recommendation': 'reject'}],
+            'owner_choice': {'stage': 'drafting', 'selected_article_id': 1}}
+    settings = SimpleNamespace(user_agent='test', timezone=tz, writing_model='write', approval_hours=24)
+    previews = []
+    pipeline = ResearchPipeline(store, settings, SimpleNamespace(send_preview=previews.append))
+    monkeypatch.setattr('buh_news.pipeline.extract_article', lambda _fetcher, _url: (url, 'Fetched article'))
+    stages = []
+    post = '<b>Новини для підприємців</b> ' + 'Важлива новина для підприємців. ' * 7
+    def ai_call(_run_id, stage, *_args):
+        stages.append(stage)
+        if stage == 'writing':
+            return {'status': 'ready', 'post': post,
+                    'evidence': {'claims': [{'claim': 'example'}], 'source_urls': [url]}}
+        return {'passed': True, 'unsupported_claims': [], 'notes': []}
+    monkeypatch.setattr(pipeline.ai, 'call', ai_call)
+    monkeypatch.setattr(pipeline, '_proofread', lambda _run_id, draft: draft['post'])
+    draft_id = pipeline.draft_selected('r', 1)
+    assert stages == ['writing', 'editorial_review']
+    assert previews == [draft_id]
+    with store.locked() as state:
+        assert state['articles']['1']['source_id'] == 'kros_legislation'
+        assert state['articles']['1']['full_text'] == 'Fetched article'
+        assert state['drafts'][draft_id]['status'] == 'pending'
+        assert state['versions'][draft_id]['1']['review_passed'] is True
+
+
 def test_run_log_explains_no_ranked_choices_and_source_failure(tmp_path, monkeypatch):
     store = FileStore(tmp_path)
     tz = ZoneInfo('Europe/Bratislava')

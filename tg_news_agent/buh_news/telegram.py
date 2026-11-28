@@ -1,5 +1,5 @@
 from __future__ import annotations
-from datetime import datetime
+from datetime import datetime, timedelta
 from hashlib import sha256
 from html import escape
 import logging
@@ -15,14 +15,126 @@ class OwnerBot:
     def _owner(self,user_id,chat_id): return user_id==self.s.owner_user_id and chat_id==self.s.owner_chat_id
     def _alternatives(self,run,draft):
         return [x for x in run.get('ranked_candidates',[]) if x.get('article_id')!=draft['article_id']
-                and x.get('recommendation')!='reject' and not x.get('needs_primary_verification')
-                and x.get('score',8)>=8][:3]
+                and not x.get('editorial_failed')][:3]
     def _choice_text(self,alternatives):
         return '\n\n'.join(
             f"{position}. <b>{escape(item.get('title_uk') or item['summary'])}</b>"+
-            (f"\n{escape(item['summary'])}" if item.get('title_uk') else '')
+            (f"\n{escape(item['summary'])}" if item.get('summary') else '')
             for position,item in enumerate(alternatives,1)
         )
+    def _fallback_candidates(self,run):
+        return [item for item in run.get('ranked_candidates',[])
+                if not item.get('editorial_failed')][:3]
+    def send_no_news(self,run_id):
+        self.bot.send_message(self.s.owner_chat_id,
+            'Сьогодні не знайшов придатних новин для поста і не маю оцінених тем, які можна запропонувати. Спробуйте наступний запуск.')
+    def send_fallback_offer(self,run_id):
+        with self.store.locked() as state:
+            run=state['research_runs'][run_id]
+            candidates=self._fallback_candidates(run)
+            if candidates:
+                ref=uuid4().hex[:18]
+                run['owner_choice']={'stage':'offered','offer_ref':ref,
+                    'expires_at':(datetime.now(self.s.timezone)+timedelta(hours=self.s.approval_hours)).isoformat(),
+                    'candidate_ids':[item['article_id'] for item in candidates]}
+        if not candidates:
+            self.send_no_news(run_id)
+            return False
+        cost=self.store.run_cost(run_id)
+        markup=types.InlineKeyboardMarkup().row(
+            types.InlineKeyboardButton('Публікувати',callback_data=f'n:offer:{ref}'),
+            types.InlineKeyboardButton('Закрити',callback_data=f'n:offerclose:{ref}'))
+        self.bot.send_message(self.s.owner_chat_id,
+            '<b>Сьогодні не знайшов достатньо цінної теми для автоматичної чернетки.</b>\n\n'
+            'Ось найкращі з доступних тем, навіть якщо їхня оцінка низька:\n\n'
+            +self._choice_text(candidates)+f'\n\nAI за цей запуск: <b>${cost:.6f}</b>\n\n'
+            '«Публікувати» спершу дасть обрати тему. Пост буде підготовлено й надіслано вам для окремого схвалення; без нього в канал нічого не піде.',
+            parse_mode='HTML',reply_markup=markup,disable_web_page_preview=True)
+        return True
+    def _fallback_selection(self,run_id,chat_id):
+        with self.store.locked() as state:
+            choice=state['research_runs'][run_id]['owner_choice']
+            if datetime.fromisoformat(choice['expires_at'])<=datetime.now(self.s.timezone):
+                choice['stage']='expired'; return False
+            candidates=self._fallback_candidates(state['research_runs'][run_id])
+            if not candidates:
+                choice['stage']='closed'; return False
+            ref=uuid4().hex[:18]
+            choice.update(stage='selecting',selection_ref=ref,
+                          candidate_ids=[item['article_id'] for item in candidates])
+        markup=types.InlineKeyboardMarkup().row(*[
+            types.InlineKeyboardButton(str(position),callback_data=f'n:offerpick:{ref}:{position}')
+            for position in range(1,len(candidates)+1)])
+        self.bot.send_message(chat_id,'<b>Оберіть тему для підготовки поста</b>\n\n'
+                              +self._choice_text(candidates),parse_mode='HTML',reply_markup=markup)
+        return True
+    def _fallback_action(self,call,action,ref):
+        with self.store.locked() as state:
+            match=next(((run_id,run['owner_choice']) for run_id,run in state['research_runs'].items()
+                        if run.get('owner_choice',{}).get('offer_ref')==ref),None)
+            if not match: return
+            run_id,choice=match
+            valid=choice['stage']=='offered' and datetime.fromisoformat(choice['expires_at'])>datetime.now(self.s.timezone)
+            if valid and action=='offerclose': choice['stage']='closed'
+            if valid:
+                state['approval_events'].append({'draft_id':None,'version':None,'event_type':action,
+                    'actor_user_id':call.from_user.id,'actor_chat_id':call.message.chat.id,
+                    'callback_ref':ref,'created_at':datetime.now(self.s.timezone).isoformat(),
+                    'details':{'run_id':run_id}})
+        if not valid:
+            self.bot.send_message(call.message.chat.id,'Цей вибір уже недійсний.'); return
+        if action=='offerclose':
+            self.bot.send_message(call.message.chat.id,'Закрито. Сьогодні нічого не публікуємо.')
+        elif not self._fallback_selection(run_id,call.message.chat.id):
+            self.bot.send_message(call.message.chat.id,'Більше доступних тем немає.')
+    def _fallback_pick(self,call,ref,position):
+        with self.store.locked() as state:
+            match=next(((run_id,run['owner_choice']) for run_id,run in state['research_runs'].items()
+                        if run.get('owner_choice',{}).get('selection_ref')==ref),None)
+            if not match: return
+            run_id,choice=match
+            ids=choice.get('candidate_ids',[])
+            valid=(choice['stage']=='selecting' and 1<=position<=len(ids)
+                   and datetime.fromisoformat(choice['expires_at'])>datetime.now(self.s.timezone))
+            if valid:
+                article_id=ids[position-1]
+                choice.update(stage='drafting',selected_article_id=article_id)
+                state['approval_events'].append({'draft_id':None,'version':None,'event_type':'fallback_article_selected',
+                    'actor_user_id':call.from_user.id,'actor_chat_id':call.message.chat.id,
+                    'callback_ref':ref,'created_at':datetime.now(self.s.timezone).isoformat(),
+                    'details':{'run_id':run_id,'article_id':article_id}})
+        if not valid:
+            self.bot.send_message(call.message.chat.id,'Цей вибір уже недійсний.'); return
+        self.bot.send_message(call.message.chat.id,'Готую пост за обраною темою та перевіряю факти…')
+        try:
+            from .pipeline import ResearchPipeline
+            ResearchPipeline(self.store,self.s,self).draft_selected(run_id,article_id)
+        except Exception as exc:
+            from .ai import BudgetError
+            from .pipeline import DraftValidationError
+            with self.store.locked() as state:
+                run=state['research_runs'][run_id]; choice=run['owner_choice']
+                created=choice.get('draft_id')
+                if not created:
+                    if isinstance(exc,BudgetError): choice['stage']='closed'
+                    elif isinstance(exc,DraftValidationError):
+                        for item in run['ranked_candidates']:
+                            if item['article_id']==article_id: item['editorial_failed']=True
+                        choice['stage']='selecting'
+                    else: choice['stage']='selecting'
+            if created:
+                self.bot.send_message(call.message.chat.id,'Чернетку створено, але її доставку не підтверджено. Перевірте журнал перед повторною спробою.')
+            elif isinstance(exc,BudgetError):
+                self.bot.send_message(call.message.chat.id,'Ліміт AI-бюджету вичерпано. Пост не створено.')
+            elif isinstance(exc,DraftValidationError):
+                self.bot.send_message(call.message.chat.id,'Ця тема не пройшла перевірку. Пропоную наступні теми:')
+                if not self._fallback_selection(run_id,call.message.chat.id):
+                    self.bot.send_message(call.message.chat.id,'Інших тем для цього запуску немає.')
+            else:
+                logging.exception('Owner-selected article could not be drafted')
+                self.bot.send_message(call.message.chat.id,'Не вдалося обробити тему через тимчасову помилку. Її не вилучено з вибору; можна спробувати знову або обрати іншу:')
+                if not self._fallback_selection(run_id,call.message.chat.id):
+                    self.bot.send_message(call.message.chat.id,'Інших тем для цього запуску немає.')
     def _buttons(self,draft_id,version,content_hash):
         ref=sha256(f'{draft_id}:{version}:{content_hash}'.encode()).hexdigest()[:18]
         with self.store.locked() as s:s['approval_events'].append({'draft_id':draft_id,'version':version,'event_type':'preview_created','callback_ref':ref,'created_at':datetime.now(self.s.timezone).isoformat(),'details':{}})
@@ -80,7 +192,7 @@ class OwnerBot:
                 if draft and draft['status']=='revision_requested': draft['status']='pending'
                 if validation_failed and draft:
                     for candidate in s['research_runs'][draft['run_id']]['ranked_candidates']:
-                        if candidate['article_id']==article_id: candidate['recommendation']='reject'
+                        if candidate['article_id']==article_id: candidate['editorial_failed']=True
                 s['approval_events'].append({'draft_id':draft_id,'version':None,'event_type':'article_selection_failed','actor_user_id':call.from_user.id,'actor_chat_id':call.message.chat.id,'created_at':datetime.now(self.s.timezone).isoformat(),'details':{'selected_article_id':article_id,'reason':type(exc).__name__}})
             if validation_failed:
                 self.bot.send_message(call.message.chat.id,'Ця тема не пройшла редакційну перевірку та вилучена з вибору. Ось наступні теми:')
@@ -94,9 +206,9 @@ class OwnerBot:
             run=s['research_runs'].get(run_id,{})
             alternatives=self._alternatives(run,d)
         run_cost=self.store.run_cost(run_id)
-        alternatives_text=self._choice_text(alternatives) or 'Немає інших релевантних тем у цьому запуску.'
+        alternatives_text=self._choice_text(alternatives) or 'Немає інших тем у цьому запуску.'
         note=(f"<b>Редакційна нотатка</b>\n💳 AI за цей запуск: <b>${run_cost:.6f}</b>\n\n"
-              f"<b>Ще 3 сильні теми</b>\n{alternatives_text}\n\n"
+              f"<b>Інші теми (до 3)</b>\n{alternatives_text}\n\n"
               f"Дійсне до: {datetime.fromisoformat(expiry).strftime('%Y-%m-%d %H:%M %Z')}")
         message=self.bot.send_message(self.s.owner_chat_id,content,parse_mode='HTML',disable_web_page_preview=True)
         note_message=self.bot.send_message(self.s.owner_chat_id,note,parse_mode='HTML',reply_markup=self._buttons(draft_id,version,content_hash),disable_web_page_preview=True)
@@ -124,6 +236,12 @@ class OwnerBot:
             parts=call.data.split(':')
             if len(parts)<3:return
             action,ref=parts[1],parts[2]
+            if action in {'offer','offerclose'} and len(parts)==3:
+                self._fallback_action(call,action,ref); return
+            if action=='offerpick' and len(parts)==4:
+                try: position=int(parts[3])
+                except ValueError: return
+                self._fallback_pick(call,ref,position); return
             if action=='pick':
                 try: position=int(parts[3])
                 except (IndexError,ValueError): return
@@ -193,7 +311,7 @@ class OwnerBot:
                         draft['status']='pending'; draft['updated_at']=datetime.now(self.s.timezone).isoformat()
                     s['approval_events'].append({'draft_id':draft_id,'version':None,'event_type':'correction_failed','actor_user_id':message.from_user.id,'actor_chat_id':message.chat.id,'created_at':datetime.now(self.s.timezone).isoformat(),'details':{'reason':type(exc).__name__}})
                 self.bot.send_message(message.chat.id,'Виправлений варіант не пройшов перевірку або сталася помилка. Попередня чернетка лишається доступною; натисніть «Виправити» ще раз або оберіть іншу тему.')
-    def run(self): self.bot.infinity_polling(skip_pending=True,allowed_updates=['message','callback_query'])
+    def run(self): self.bot.infinity_polling(skip_pending=False,allowed_updates=['message','callback_query'])
     def expire(self):
         now=datetime.now(self.s.timezone)
         with self.store.locked() as s:
@@ -201,3 +319,6 @@ class OwnerBot:
                 if d['status'] in {'pending','revision_requested'} and datetime.fromisoformat(d['approval_expires_at'])<=now:d['status']='expired'; d['updated_at']=now.isoformat()
             for r in s['research_runs'].values():
                 if r['status']=='running':r.update(status='research_failed',finished_at=now.isoformat(),error='stale run recovered by maintenance')
+                choice=r.get('owner_choice')
+                if choice and choice.get('stage') in {'offered','selecting'} and datetime.fromisoformat(choice['expires_at'])<=now:
+                    choice['stage']='expired'
